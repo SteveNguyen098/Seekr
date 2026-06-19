@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coming Soon — Seekr</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --orange: #E5A000;
+      --white: #ffffff;
+      --gray-100: #f0f0f0;
+      --gray-500: #888888;
+      --black: #111111;
+      --font: 'Inter', sans-serif;
+    }
+    body {
+      font-family: var(--font);
+      background: var(--white);
+      color: var(--black);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 48px;
+      border-bottom: 1px solid var(--gray-100);
+    }
+    .nav-logo {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      text-decoration: none;
+      color: var(--black);
+    }
+    .nav-logo span { color: var(--orange); }
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 48px 24px;
+    }
+    .badge {
+      background: var(--orange);
+      color: var(--white);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      padding: 6px 14px;
+      border-radius: 100px;
+      margin-bottom: 24px;
+      display: inline-block;
+    }
+    h1 {
+      font-size: clamp(32px, 5vw, 52px);
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 16px;
+    }
+    h1 span { color: var(--orange); }
+    p {
+      font-size: 16px;
+      color: var(--gray-500);
+      max-width: 400px;
+      margin-bottom: 32px;
+      line-height: 1.6;
+    }
+    .btn-home {
+      background: var(--black);
+      color: var(--white);
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--font);
+      text-decoration: none;
+      transition: background 0.2s;
+      display: inline-block;
+    }
+    .btn-home:hover { background: var(--orange); }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="index.html" class="nav-logo">seekr<span>&#8250;</span></a>
+  </nav>
+  <main class="main">
+    <span class="badge">Coming Soon</span>
+    <h1>We're working on it<span>.</span></h1>
+    <p>This page is under construction. Check back soon — we're building something worth waiting for.</p>
+    <a href="index.html" class="btn-home">← Back to Home</a>
+  </main>
+</body>
+</html>

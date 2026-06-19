@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Seekr — Your Automated Job Hunt Agent</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & Base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange: #E5A000;
+      --orange-dark: #c98c00;
+      --white: #ffffff;
+      --gray-50: #f9f9f9;
+      --gray-100: #f0f0f0;
+      --gray-300: #d0d0d0;
+      --gray-500: #888888;
+      --gray-700: #444444;
+      --black: #111111;
+      --font: 'Inter', sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      color: var(--black);
+      background: var(--white);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    a { text-decoration: none; color: inherit; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 48px;
+      background: var(--white);
+      border-bottom: 1px solid var(--gray-100);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .nav-logo span { color: var(--orange); }
+
+    .nav-logo .arrow {
+      font-size: 20px;
+      color: var(--black);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--gray-700);
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--black); }
+
+    .nav-cta {
+      background: var(--black);
+      color: var(--white) !important;
+      padding: 9px 20px;
+      border-radius: 6px;
+      font-size: 14px !important;
+      font-weight: 600 !important;
+      transition: background 0.2s !important;
+    }
+
+    .nav-cta:hover { background: var(--orange) !important; color: var(--white) !important; }
+
+    /* ── Hero ── */
+    .hero {
+      text-align: center;
+      padding: 96px 24px 80px;
+      background: var(--white);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--gray-100) 1px, transparent 1px),
+        linear-gradient(90deg, var(--gray-100) 1px, transparent 1px);
+      background-size: 40px 40px;
+      opacity: 0.5;
+      z-index: 0;
+    }
+
+    .hero-inner { position: relative; z-index: 1; }
+
+    .hero h1 {
+      font-size: clamp(36px, 5vw, 58px);
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 16px;
+    }
+
+    .hero h1 span { color: var(--orange); }
+
+    .hero p {
+      font-size: 18px;
+      color: var(--gray-700);
+      font-weight: 400;
+      margin-bottom: 0;
+    }
+
+    /* ── Mission Band ── */
+    .mission-band {
+      background: var(--orange);
+      padding: 56px 48px;
+      text-align: center;
+    }
+
+    .mission-band p {
+      font-size: clamp(18px, 2.5vw, 24px);
+      font-weight: 700;
+      color: var(--white);
+      max-width: 780px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+
+    /* ── Features ── */
+    .features {
+      padding: 80px 48px;
+      background: var(--white);
+    }
+
+    .features-header {
+      margin-bottom: 48px;
+    }
+
+    .features-header h2 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .features-header h2 span { color: var(--orange); }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 40px 48px;
+    }
+
+    .feature-item {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .feature-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1.5px solid var(--gray-300);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--gray-500);
+      flex-shrink: 0;
+      margin-bottom: 4px;
+    }
+
+    .feature-item h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--black);
+    }
+
+    .feature-item p {
+      font-size: 13.5px;
+      color: var(--gray-700);
+      line-height: 1.6;
+    }
+
+    /* ── Waitlist ── */
+    .waitlist {
+      background: var(--gray-50);
+      border-top: 1px solid var(--gray-100);
+      border-bottom: 1px solid var(--gray-100);
+      padding: 72px 48px;
+      text-align: center;
+    }
+
+    .waitlist h2 {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .waitlist p {
+      font-size: 15px;
+      color: var(--gray-500);
+      margin-bottom: 32px;
+    }
+
+    .waitlist-form {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .waitlist-form input {
+      flex: 1;
+      min-width: 180px;
+      padding: 12px 16px;
+      border: 1.5px solid var(--gray-300);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: var(--font);
+      background: var(--white);
+      color: var(--black);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .waitlist-form input:focus { border-color: var(--orange); }
+
+    .waitlist-form input::placeholder { color: var(--gray-500); }
+
+    .btn-waitlist {
+      background: var(--orange);
+      color: var(--white);
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .btn-waitlist:hover { background: var(--orange-dark); }
+
+    .waitlist-note {
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--gray-500);
+    }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--orange);
+      padding: 48px 48px 32px;
+      color: var(--white);
+    }
+
+    .footer-top {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 48px;
+      margin-bottom: 40px;
+    }
+
+    .footer-logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 12px;
+    }
+
+    .footer-logo span { opacity: 0.7; }
+
+    .footer-tagline {
+      font-size: 13px;
+      opacity: 0.8;
+      max-width: 220px;
+      line-height: 1.5;
+    }
+
+    .footer-col h4 {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+      opacity: 0.9;
+    }
+
+    .footer-col ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .footer-col ul li a {
+      font-size: 13px;
+      opacity: 0.75;
+      transition: opacity 0.2s;
+    }
+
+    .footer-col ul li a:hover { opacity: 1; }
+
+    .footer-bottom {
+      border-top: 1px solid rgba(255,255,255,0.2);
+      padding-top: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .footer-social {
+      display: flex;
+      gap: 16px;
+    }
+
+    .footer-social a {
+      font-size: 18px;
+      opacity: 0.75;
+      transition: opacity 0.2s;
+    }
+
+    .footer-social a:hover { opacity: 1; }
+
+    .footer-copy {
+      font-size: 12px;
+      opacity: 0.65;
+    }
+
+    /* ── Coming Soon page (for community link) ── */
+    /* Handled via separate page */
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      nav { padding: 16px 20px; }
+      .nav-links { gap: 16px; }
+      .hero { padding: 64px 20px 56px; }
+      .mission-band { padding: 40px 24px; }
+      .features { padding: 56px 20px; }
+      .features-grid { grid-template-columns: 1fr 1fr; gap: 32px 24px; }
+      .waitlist { padding: 56px 20px; }
+      .waitlist-form { flex-direction: column; align-items: stretch; }
+      footer { padding: 40px 20px 24px; }
+      .footer-top { grid-template-columns: 1fr; gap: 32px; }
+      .footer-bottom { flex-direction: column; gap: 16px; text-align: center; }
+    }
+
+    @media (max-width: 480px) {
+      .features-grid { grid-template-columns: 1fr; }
+      .nav-links li:not(:last-child) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+  <div class="nav-logo">
+    seekr<span>&#8250;</span>
+  </div>
+  <ul class="nav-links">
+    <li><a href="pricing.html">Pricing</a></li>
+    <li><a href="community.html">Community</a></li>
+    <li><a href="resources.html">Resources</a></li>
+    <li><a href="#waitlist" class="nav-cta">Join the Wait List</a></li>
+  </ul>
+</nav>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="hero-inner">
+    <h1>Welcome to seekr<span>&#8250;</span></h1>
+    <p>Your Automated Job Hunt Agent</p>
+  </div>
+</section>
+
+<!-- ── Mission Band ── -->
+<section class="mission-band">
+  <p>Job searching shouldn't require you to sit down for hours pumping out applications. For people who are busy, burned out, or just not feeling it — there's no reliable, affordable, and actually effective way to automate the process. Seekr fixes that.</p>
+</section>
+
+<!-- ── Features ── -->
+<section class="features">
+  <div class="features-header">
+    <h2>How Seekr Works<span>...</span></h2>
+  </div>
+  <div class="features-grid">
+
+    <div class="feature-item">
+      <div class="feature-icon">i</div>
+      <h3>Tailors every application</h3>
+      <p>No need to create a brand new resume — use your pre-existing document and let our app assess and alter your resume to your needs.</p>
+    </div>
+
+    <div class="feature-item">
+      <div class="feature-icon">i</div>
+      <h3>Pick the companies</h3>
+      <p>Choose your companies, choose your career — use 10+ companies within a single use to properly guide your resume to their available roles.</p>
+    </div>
+
+    <div class="feature-item">
+      <div class="feature-icon">i</div>
+      <h3>Create accounts for you</h3>
+      <p>No need to manage every unique account for each application — Seekr logs and creates those accounts for you.</p>
+    </div>
+
+    <div class="feature-item">
+      <div class="feature-icon">i</div>
+      <h3>Applies while you sleep</h3>
+      <p>Automate and extradite your application process — no need to sit and sift through applications, let Seekr handle it.</p>
+    </div>
+
+    <div class="feature-item">
+      <div class="feature-icon">i</div>
+      <h3>Free to start, always</h3>
+      <p>Tired of expensive "Auto-Apply" apps? Seekr allows low cost, pricing efficient solutions to better fit your lifestyle and needs.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Waitlist ── -->
+<section class="waitlist" id="waitlist">
+  <h2>Sign up to be the first to know when Seekr launches.</h2>
+  <p>No spam. Just an update when we're ready.</p>
+  <div class="waitlist-form">
+    <input type="text" placeholder="Full Name" />
+    <input type="email" placeholder="Email Address" />
+    <button class="btn-waitlist">Join the Wait List</button>
+  </div>
+  <p class="waitlist-note">We'll never share your information with anyone.</p>
+</section>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="footer-top">
+    <div>
+      <div class="footer-logo">seekr<span>&#8250;</span></div>
+      <p class="footer-tagline">Your automated job hunt agent. Built for people who don't have time to sit down and apply.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Product</h4>
+      <ul>
+        <li><a href="#">Resume Alteration</a></li>
+        <li><a href="#">Choosing Your Companies</a></li>
+        <li><a href="#">Accounts Management</a></li>
+        <li><a href="#">Automation Process</a></li>
+        <li><a href="pricing.html">Pricing</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Resources</h4>
+      <ul>
+        <li><a href="#">Blog</a></li>
+        <li><a href="#">Guide</a></li>
+        <li><a href="#">Support</a></li>
+        <li><a href="#">Meet the Team</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <div class="footer-social">
+      <a href="#" title="X / Twitter">𝕏</a>
+      <a href="#" title="Instagram">⬡</a>
+      <a href="#" title="YouTube">▶</a>
+      <a href="#" title="LinkedIn">in</a>
+    </div>
+    <p class="footer-copy">&copy; 2026 Seekr. All rights reserved.</p>
+  </div>
+</footer>
+
+</body>
+</html>
