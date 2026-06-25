@@ -382,9 +382,9 @@
 <nav>
   <div class="nav-logo">seekr<span class="arrow">&#8250;</span></div>
   <ul class="nav-links">
-    <li><a href="pages/coming-soon.html">Pricing</a></li>
-    <li><a href="pages/coming-soon.html">Community</a></li>
-    <li><a href="pages/coming-soon.html">Resources</a></li>
+    <li><a href="coming-soon.html">Pricing</a></li>
+    <li><a href="coming-soon.html">Community</a></li>
+    <li><a href="coming-soon.html">Resources</a></li>
     <li><a href="#waitlist" class="nav-cta">Join the Wait List</a></li>
   </ul>
 </nav>
@@ -444,15 +444,121 @@
 
 <!-- ── Waitlist ── -->
 <section class="waitlist" id="waitlist">
+  <style type="text/css">
+    /* MailerLite overrides to match Seekr design */
+    #mlb2-43057159.ml-form-embedContainer {
+      background: transparent !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper {
+      background-color: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      max-width: 560px !important;
+      margin: 0 auto !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody {
+      padding: 0 !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody .ml-form-embedContent h4 {
+      display: none !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody .ml-form-embedContent p {
+      display: none !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody .ml-form-fieldRow input {
+      font-family: 'Inter', sans-serif !important;
+      font-size: 14px !important;
+      border-color: #d0d0d0 !important;
+      border-radius: 6px !important;
+      padding: 12px 16px !important;
+      color: #111111 !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody .ml-form-embedSubmit button {
+      background-color: #E5A000 !important;
+      border-radius: 6px !important;
+      font-family: 'Inter', sans-serif !important;
+      font-size: 14px !important;
+      font-weight: 600 !important;
+      padding: 12px !important;
+      transition: background 0.2s !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-embedBody .ml-form-embedSubmit button:hover {
+      background-color: #c98c00 !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-successBody {
+      padding: 0 !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-successBody .ml-form-successContent h4 {
+      font-family: 'Inter', sans-serif !important;
+      font-size: 20px !important;
+      font-weight: 700 !important;
+      color: #E5A000 !important;
+      text-align: center !important;
+    }
+    #mlb2-43057159.ml-form-embedContainer .ml-form-embedWrapper .ml-form-successBody .ml-form-successContent p {
+      font-family: 'Inter', sans-serif !important;
+      text-align: center !important;
+      color: #888888 !important;
+    }
+  </style>
+
   <h2>Sign up to be the first to know when Seekr launches.</h2>
   <p>No spam. Just an update when we're ready.</p>
-  <div class="waitlist-form">
-    <input type="text" id="waitlist-name" placeholder="Full Name" />
-    <input type="email" id="waitlist-email" placeholder="Email Address" />
-    <button class="btn-waitlist" onclick="handleWaitlist()">Join the Wait List</button>
+
+  <div id="mlb2-43057159" class="ml-form-embedContainer ml-subscribe-form ml-subscribe-form-43057159">
+    <div class="ml-form-align-center">
+      <div class="ml-form-embedWrapper embedForm">
+        <div class="ml-form-embedBody ml-form-embedBodyDefault row-form">
+          <div class="ml-form-embedContent" style=" ">
+            <h4>Sign up to be the first to know when Seekr launches.</h4>
+            <p>No spam. Just an update when we're ready.</p>
+          </div>
+          <form class="ml-block-form" action="https://assets.mailerlite.com/jsonp/2465859/forms/191272442866435249/subscribe" data-code="" method="post" target="_blank">
+            <div class="ml-form-formContent">
+              <div class="ml-form-fieldRow">
+                <div class="ml-field-group ml-field-name">
+                  <input aria-label="name" type="text" class="form-control" data-inputmask="" name="fields[name]" placeholder="Full Name" autocomplete="given-name">
+                </div>
+              </div>
+              <div class="ml-form-fieldRow ml-last-item">
+                <div class="ml-field-group ml-field-email ml-validate-email ml-validate-required">
+                  <input aria-label="email" aria-required="true" type="email" class="form-control" data-inputmask="" name="fields[email]" placeholder="Email Address" autocomplete="email">
+                </div>
+              </div>
+            </div>
+            <input type="hidden" name="ml-submit" value="1">
+            <div class="ml-form-embedSubmit">
+              <button type="submit" class="primary">Join the Wait List</button>
+              <button disabled="disabled" style="display:none;" type="button" class="loading">
+                <div class="ml-form-embedSubmitLoad"></div>
+                <span class="sr-only">Loading...</span>
+              </button>
+            </div>
+            <input type="hidden" name="anticsrf" value="true">
+          </form>
+        </div>
+        <div class="ml-form-successBody row-success" style="display:none">
+          <div class="ml-form-successContent">
+            <h4>Thanks! We'll let you know when Seekr launches. 🎉</h4>
+            <p>You have successfully joined our wait list.</p>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
-  <p class="waitlist-note" id="waitlist-note">We'll never share your information with anyone.</p>
-  <p class="waitlist-confirm" id="waitlist-confirm" style="display:none;color:#E5A000;font-weight:600;margin-top:16px;font-size:15px;">Thanks! We'll let you know when Seekr launches. 🎉</p>
+  <p class="waitlist-note">We'll never share your information with anyone.</p>
+
+  <script>
+    function ml_webform_success_43057159() {
+      var $ = ml_jQuery || jQuery;
+      $('.ml-subscribe-form-43057159 .row-success').show();
+      $('.ml-subscribe-form-43057159 .row-form').hide();
+    }
+  </script>
+  <script src="https://groot.mailerlite.com/js/w/webforms.min.js?v83147fa8ce2d95cb73ece7f28b469519" type="text/javascript"></script>
+  <script>
+    fetch("https://assets.mailerlite.com/jsonp/2465859/forms/191272442866435249/takel")
+  </script>
 </section>
 
 <!-- ── Footer ── -->
@@ -465,20 +571,20 @@
     <div class="footer-col">
       <h4>Product</h4>
       <ul>
-        <li><a href="pages/coming-soon.html">Resume Alteration</a></li>
-        <li><a href="pages/coming-soon.html">Choosing Your Companies</a></li>
-        <li><a href="pages/coming-soon.html">Accounts Management</a></li>
-        <li><a href="pages/coming-soon.html">Automation Process</a></li>
-        <li><a href="pages/coming-soon.html">Pricing</a></li>
+        <li><a href="coming-soon.html">Resume Alteration</a></li>
+        <li><a href="coming-soon.html">Choosing Your Companies</a></li>
+        <li><a href="coming-soon.html">Accounts Management</a></li>
+        <li><a href="coming-soon.html">Automation Process</a></li>
+        <li><a href="coming-soon.html">Pricing</a></li>
       </ul>
     </div>
     <div class="footer-col">
       <h4>Resources</h4>
       <ul>
-        <li><a href="pages/coming-soon.html">Blog</a></li>
-        <li><a href="pages/coming-soon.html">Guide</a></li>
-        <li><a href="pages/coming-soon.html">Support</a></li>
-        <li><a href="pages/coming-soon.html">Meet the Team</a></li>
+        <li><a href="coming-soon.html">Blog</a></li>
+        <li><a href="coming-soon.html">Guide</a></li>
+        <li><a href="coming-soon.html">Support</a></li>
+        <li><a href="coming-soon.html">Meet the Team</a></li>
       </ul>
     </div>
   </div>
@@ -492,20 +598,6 @@
     <p class="footer-copy">&copy; 2026 Seekr. All rights reserved.</p>
   </div>
 </footer>
-
-<script>
-function handleWaitlist() {
-  const name = document.getElementById('waitlist-name').value.trim();
-  const email = document.getElementById('waitlist-email').value.trim();
-  if (!name || !email) {
-    alert('Please fill in both your name and email.');
-    return;
-  }
-  document.querySelector('.waitlist-form').style.display = 'none';
-  document.getElementById('waitlist-note').style.display = 'none';
-  document.getElementById('waitlist-confirm').style.display = 'block';
-}
-</script>
 
 </body>
 </html>
