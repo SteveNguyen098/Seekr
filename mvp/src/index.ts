@@ -1,0 +1,227 @@
+import "dotenv/config";
+import { chromium } from "playwright";
+import Anthropic from "@anthropic-ai/sdk";
+import readline from "node:readline/promises";
+import path from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { loadResume } from "./resume.js";
+import { listJobs, getJobDescription } from "./scrape.js";
+import { filterByTitle, filterByLocation, passesHardRequirements, type Criteria } from "./filter.js";
+import { rankJobs, type CandidateJob } from "./match.js";
+import { openApplicationForm, fillApplication } from "./apply.js";
+import { loadPersonalContext } from "./context.js";
+
+function parseArgs(argv: string[]) {
+  const args: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith("--")) {
+      const key = argv[i].slice(2);
+      const value = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+      args[key] = value;
+    }
+  }
+  return args;
+}
+
+function usageAndExit(): never {
+  console.error(`Usage:
+  npx tsx src/index.ts --career-url <url> --resume <path.docx> [--criteria <path.json>] [--titles "title1,title2"] [--max-years N] [--out ./out]
+
+A --criteria file supplies target titles and screening rules in one place
+(see criteria.json). Individual flags override whatever it sets.
+Either --criteria or --titles is required.
+
+Example:
+  npx tsx src/index.ts \\
+    --career-url "https://job-boards.greenhouse.io/attentive" \\
+    --resume "./resume.docx" \\
+    --criteria "./criteria.json"
+`);
+  process.exit(1);
+}
+
+interface CriteriaFile {
+  titles?: string[];
+  maxYearsExperience?: number;
+  minSalaryAnnual?: number;
+  minSalaryHourly?: number;
+  requireFullTimeOrContractToHire?: boolean;
+  acceptableLocations?: string[];
+  minMatchScore?: number;
+}
+
+const args = parseArgs(process.argv.slice(2));
+if (!args["career-url"] || !args["resume"] || (!args["criteria"] && !args["titles"])) usageAndExit();
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error("ANTHROPIC_API_KEY is not set. Add it to a .env file (see .env.example).");
+  process.exit(1);
+}
+
+const careerUrl = args["career-url"];
+const resumePath = args["resume"];
+const outDir = path.resolve(args["out"] || "./out");
+const MAX_CANDIDATES_TO_INSPECT = 8;
+
+let fileCriteria: CriteriaFile = {};
+if (args["criteria"]) {
+  fileCriteria = JSON.parse(await readFile(path.resolve(args["criteria"]), "utf-8"));
+}
+
+const targetTitles = args["titles"]
+  ? args["titles"].split(",").map((t) => t.trim()).filter(Boolean)
+  : (fileCriteria.titles ?? []);
+if (targetTitles.length === 0) usageAndExit();
+
+const criteria: Criteria = {
+  targetTitles,
+  maxYearsExperience: args["max-years"] ? Number(args["max-years"]) : fileCriteria.maxYearsExperience,
+  minSalaryAnnual: args["min-salary-annual"] ? Number(args["min-salary-annual"]) : fileCriteria.minSalaryAnnual,
+  minSalaryHourly: args["min-salary-hourly"] ? Number(args["min-salary-hourly"]) : fileCriteria.minSalaryHourly,
+  requireFullTimeOrContractToHire:
+    args["require-full-time-or-cth"] !== undefined
+      ? args["require-full-time-or-cth"] === "true"
+      : fileCriteria.requireFullTimeOrContractToHire,
+  acceptableLocations: args["locations"]
+    ? args["locations"].split(",").map((l) => l.trim()).filter(Boolean)
+    : fileCriteria.acceptableLocations,
+};
+const minMatchScore = args["min-score"] ? Number(args["min-score"]) : (fileCriteria.minMatchScore ?? 0);
+
+await mkdir(outDir, { recursive: true });
+
+const anthropic = new Anthropic();
+
+console.log(`Loading resume from ${resumePath}...`);
+const resume = await loadResume(resumePath);
+console.log(`  -> ${resume.name} <${resume.email}>`);
+
+const personalContext = await loadPersonalContext(process.cwd());
+const contextLoaded = [
+  personalContext.profile.address && "user_profile.txt",
+  personalContext.qaContext && "qa_context.txt",
+  personalContext.workAuthContext && "work_auth_context.txt",
+].filter(Boolean);
+console.log(`  -> personal context loaded: ${contextLoaded.length ? contextLoaded.join(", ") : "none found (contact/screening-question fields will be left blank)"}`);
+
+const headed = args["headed"] === "true";
+const browser = await chromium.launch({ headless: !headed });
+const page = await browser.newPage();
+
+try {
+  console.log(`\nScraping career page: ${careerUrl}`);
+  const allJobs = await listJobs(page, careerUrl);
+  console.log(`  -> found ${allJobs.length} postings`);
+
+  const titleMatches = filterByTitle(allJobs, criteria);
+  console.log(`  -> ${titleMatches.length} match target titles [${targetTitles.join(", ")}]`);
+  if (titleMatches.length === 0) {
+    console.log("No postings matched the target titles. Try broader keywords.");
+    await browser.close();
+    process.exit(0);
+  }
+
+  const locationMatches = filterByLocation(titleMatches, criteria);
+  if (criteria.acceptableLocations?.length) {
+    console.log(
+      `  -> ${locationMatches.length} pass the location filter [${criteria.acceptableLocations.join(", ")}] (${titleMatches.length - locationMatches.length} dropped for being tied to a specific non-matching place)`
+    );
+  }
+  if (locationMatches.length === 0) {
+    console.log("No postings survived the location filter.");
+    await browser.close();
+    process.exit(0);
+  }
+
+  const candidates: CandidateJob[] = [];
+  for (const job of locationMatches.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
+    const { text } = await getJobDescription(page, job.url);
+    const hardCheck = passesHardRequirements(text, criteria);
+    if (!hardCheck.pass) {
+      console.log(`  skip "${job.title}": ${hardCheck.reason}`);
+      continue;
+    }
+    candidates.push({ title: job.title, url: job.url, location: job.location, descriptionText: text });
+  }
+
+  if (candidates.length === 0) {
+    console.log("No postings survived the hard-requirements filter.");
+    await browser.close();
+    process.exit(0);
+  }
+
+  console.log(`\nAsking Claude to rank ${candidates.length} candidate posting(s) against the resume...`);
+  const ranked = await rankJobs(anthropic, resume.text, candidates);
+  for (const r of ranked) {
+    console.log(`  [${r.score.toFixed(0)}] ${r.job.title} (${r.job.location}) - ${r.reasoning}`);
+  }
+
+  const best = ranked[0];
+
+  if (best.score < minMatchScore) {
+    console.log(
+      `\nBest candidate "${best.job.title}" scored ${best.score.toFixed(0)}, below the minimum match score of ${minMatchScore}.`
+    );
+    console.log(`No posting was a strong enough fit to fill out. Try different titles, or lower --min-score.`);
+    await browser.close();
+    process.exit(0);
+  }
+
+  console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);
+
+  console.log(`\nOpening application form...`);
+  await openApplicationForm(page, best.job.url);
+
+  console.log(`Filling application using resume + job description...`);
+  const report = await fillApplication(
+    page,
+    anthropic,
+    resume,
+    resumePath,
+    best.job.descriptionText,
+    outDir,
+    personalContext
+  );
+
+  const groundTruth = report.filled.filter((f) => !f.generated);
+  const generated = report.filled.filter((f) => f.generated && !f.lowConfidence);
+  const lowConfidence = report.filled.filter((f) => f.lowConfidence);
+
+  console.log(`\nFilled ${report.filled.length} field(s) from your resume/profile/context:`);
+  for (const f of groundTruth) console.log(`  - ${f.label}: ${f.value}`);
+
+  if (generated.length > 0) {
+    console.log(`\n${generated.length} of those were AI-generated or AI-selected - review these carefully before submitting:`);
+    for (const f of generated) console.log(`  - ${f.label}: ${f.value}`);
+  }
+
+  if (lowConfidence.length > 0) {
+    console.log(`\n${lowConfidence.length} LOW-CONFIDENCE answer(s) - the AI had to extrapolate rather than answer from something concrete, double check these especially carefully:`);
+    for (const f of lowConfidence) console.log(`  - ${f.label}: ${f.value}`);
+  }
+
+  const requiredSkipped = report.skipped.filter((s) => s.required);
+  const optionalSkipped = report.skipped.filter((s) => !s.required);
+
+  if (requiredSkipped.length > 0) {
+    console.log(`\n${requiredSkipped.length} REQUIRED field(s) still need your input before this can be submitted:`);
+    for (const s of requiredSkipped) console.log(`  - ${s.label}: ${s.reason}`);
+  }
+  if (optionalSkipped.length > 0) {
+    console.log(`\n${optionalSkipped.length} optional field(s) left for manual review:`);
+    for (const s of optionalSkipped) console.log(`  - ${s.label}: ${s.reason}`);
+  }
+
+  console.log(`\nScreenshot saved to: ${report.screenshotPath}`);
+  console.log(`\nThe application was NOT submitted.`);
+
+  if (headed) {
+    console.log(`Review the open browser window and submit manually if it looks right.`);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await rl.question("\nPress Enter to close the browser...");
+    rl.close();
+  } else {
+    console.log(`Ran headless - review the screenshot above, or re-run with --headed to watch/submit live.`);
+  }
+} finally {
+  await browser.close();
+}

@@ -1,0 +1,23 @@
+{
+  "titles": [
+    "Implementation Specialist",
+    "Implementation Analyst",
+    "Implementation Consultant",
+    "Implementation Coordinator",
+    "Project Coordinator",
+    "Project Manager",
+    "Product Coordinator",
+    "Associate Product Manager",
+    "Business Analyst",
+    "Operations Analyst",
+    "Business Operations Analyst",
+    "Systems Analyst",
+    "Customer Success Coordinator"
+  ],
+  "maxYearsExperience": 5,
+  "minSalaryAnnual": 52000,
+  "minSalaryHourly": 25,
+  "requireFullTimeOrContractToHire": true,
+  "acceptableLocations": ["Atlanta", "Remote"],
+  "minMatchScore": 45
+}

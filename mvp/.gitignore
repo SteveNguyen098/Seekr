@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+out/
+*.log
+user_profile.txt
+qa_context.txt
+work_auth_context.txt
