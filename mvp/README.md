@@ -95,6 +95,75 @@ resume, find one matching job and fill out its application form.
 10. Leaves a screenshot (and, in `--headed` mode, the live browser) so you
     can review and submit manually.
 
+## Resume tailoring
+
+Right after the best-match job is picked (step 3) and before the form opens,
+if `--resume` points at a `.docx` built with the bracket+italic convention
+below, the tool generates a tailored copy of it for that specific job and
+uploads *that* file instead of the static template - closing the loop
+end-to-end while still stopping before submit like everything else.
+
+- **Detection rule**: a section is only treated as tailorable if it has
+  *both* square brackets (`[ ]`) *and* italic formatting on the bracketed
+  text. Either signal alone is too common in a normal resume (dates and job
+  titles are often italic; a bracket can show up on its own) to be a
+  reliable marker - the combination is. Word frequently splits text across
+  several runs (the `[` character often lands in its own run, separate from
+  the text after it), so detection works at the paragraph level and merges
+  runs back together before checking.
+- **Context per bracket**: primary signal is the section header (e.g.
+  "PROFESSIONAL SUMMARY", "CORE SKILLS") plus the immediate surrounding
+  paragraph; the bracket's own current content is real material to tailor,
+  not a placeholder to invent from scratch. The full resume text and
+  `qa_context.txt` are always included too, as supporting/fallback
+  context, explicitly labeled lower priority than the local signal.
+- **No fabrication, but not silent pass-through either**: replacement text
+  can only draw on skills, tools, and claims that already appear -
+  verbatim or near-verbatim - somewhere in the resume or `qa_context.txt`.
+  If the job description asks for a specific tool (e.g. "Salesforce") but
+  neither of those actually confirms it, the output keeps the generic
+  category it does support (e.g. "CRM Platform Experience") rather than
+  naming a product that was never confirmed - if you *do* have real
+  experience with something like that, add it to `qa_context.txt` and it
+  becomes fair game to name specifically. This rule is about not inventing
+  facts, not about refusing to tailor at all: a list-shaped section (like
+  the two skills lines) must always be reordered to put the most
+  JD-relevant existing items first, even when nothing new can safely be
+  added - leaving it byte-for-byte identical across every job is a bug, not
+  a safe default, and was caught and fixed during testing (see Known
+  limitations).
+- **A reference to independent/personal project work is deliberately
+  sticky**: if the source content mentions it, the tailored version keeps
+  a reference to it too, regardless of how closely the job description's
+  own language happens to overlap with the rest of the resume. It's only
+  ever dropped as a last resort if keeping it would clearly overflow the
+  page - not as a routine trim.
+- **Scope is locked to exactly the detected bracket+italic sections** -
+  Professional Experience, Education, Projects, and everything else in the
+  document are never touched, regardless of what the job description asks
+  for. This isn't a policy layered on top; it's a direct consequence of
+  how `applyReplacements()` works - it only ever splices the exact
+  `[runXmlStart, runXmlEnd)` span of a detected placeholder, nothing else
+  in the document is ever in scope to change.
+- **Formatting**: the bracket/italic marking is a detection signal only,
+  never preserved in the output - replacement text inherits the same
+  run's font/size with the italic tags stripped, so it reads as normal
+  body text.
+- **Length is verified by actually rendering the file**, not estimated:
+  each candidate is converted to a real PDF via Microsoft Word (COM
+  automation - font metrics, margins, and line spacing all affect true
+  page breaks, so nothing short of real rendering can confirm this), and
+  its page count is read back. If a candidate doesn't match the original
+  template's page count, it regenerates with explicit feedback ("too
+  long, write noticeably shorter" / "too short, write more detail") for
+  up to 4 attempts, keeping whichever attempt came closest even if none
+  converge exactly - and says so honestly in the log if that happens.
+- **File naming**: `[First]_[Last]_Resume_[Company]_[Role].docx`, saved
+  into the same `--out` directory as the screenshot. Company and role are
+  extracted from the job posting via a small Claude call (scraped titles
+  are often messy, e.g. a location run directly onto the title with no
+  separator).
+
 ## Personal context files (optional, gitignored)
 
 Drop these in `mvp/` to get the behavior described above. All three are
@@ -117,6 +186,13 @@ npm install
 npx playwright install chromium
 cp .env.example .env   # then add your ANTHROPIC_API_KEY
 ```
+
+Resume tailoring additionally requires **Microsoft Word installed on the
+machine running the tool** (Windows only, via COM automation - see
+`scripts/docx-to-pdf.ps1`) for the page-count verification step. If Word
+isn't available, resume tailoring is skipped with a clear warning and the
+static `--resume` file is uploaded as-is - nothing else in the pipeline is
+affected.
 
 ## Run
 
@@ -155,6 +231,14 @@ npx tsx src/index.ts \
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
 matching the printed report exactly.
+
+Resume tailoring specifically has been verified live against OneTrust and
+Samsara: both converged on the original 1-page layout on the first attempt,
+uploaded the tailored file (confirmed via the report's "Attach" line) in
+place of the static template, and the generated content was checked
+against the source resume line-by-line to confirm nothing was fabricated
+(see the no-fabrication note under "Resume tailoring" above - one real
+instance of this was caught and fixed during testing).
 
 ## Known limitations (POC scope)
 
@@ -224,3 +308,39 @@ matching the printed report exactly.
   placeholder text). Fields with no such association are always left
   blank rather than guessed at - on more complex forms this can leave a
   couple dozen fields unlabeled and skipped.
+- **Resume tailoring requires Word (Windows only)** for the page-count
+  verification. It degrades gracefully without it - a warning is logged
+  and the static resume file is uploaded instead - but there's currently
+  no LibreOffice or cross-platform fallback path.
+- **Resume tailoring only detects the bracket+italic convention exactly as
+  specified** - a template that marks placeholders a different way (bold
+  instead of italic, curly braces instead of square brackets, highlighting)
+  won't be picked up. This is by design (the dual signal is what keeps
+  false positives out), but it does mean the source template has to follow
+  the convention for anything to be detected at all.
+- **The page-count retry loop caps at 4 attempts.** If tailored content
+  can't converge on the original page count within that many tries, the
+  closest attempt is still saved and used, but the log flags it clearly as
+  non-convergent so it gets extra scrutiny before submitting - it isn't
+  silently passed off as a perfect match.
+- Company/role extraction for the tailored resume's filename is itself an
+  LLM call against the job description - on a very unusually formatted
+  posting it could occasionally mislabel the company or role in the
+  filename (the resume's *content* is unaffected either way, since that's
+  driven by the actual job description text, not the extracted filename
+  labels).
+- **A real bug was caught in QA testing across two different job
+  descriptions**: the Technical Skills line came back byte-for-byte
+  identical to the source template both times, while Core Competencies
+  correctly changed each time. Root cause was prompt conservatism, not a
+  code bug (confirmed by inspecting Claude's raw responses directly -
+  Claude was answering that section every time, just choosing not to
+  change it). The original no-fabrication instruction was strong enough
+  that Claude treated "any list containing named tools" as too risky to
+  touch at all, rather than distinguishing "reordering real items" (always
+  safe) from "adding new items" (needs grounding). Fixed by explicitly
+  requiring list-shaped sections to always reorder by relevance even when
+  nothing new can safely be added - verified fixed by re-running the same
+  two job descriptions and confirming the two skills lines now produce
+  genuinely different orderings per job, with the independent-project
+  sentence preserved in both and no new fabricated tools in either.

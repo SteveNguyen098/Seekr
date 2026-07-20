@@ -37,11 +37,18 @@ end-to-end before investing in a UI.
    each job description and score the fit, the same way a recruiter would
    skim both and judge. If the best score doesn't clear your minimum bar,
    it stops here and tells you so, rather than filling out a weak match.
-5. It opens the best-scoring job's application page and fills in what it
+5. If the resume file is a `.docx` built with the bracket+italic
+   convention, it generates a tailored copy of it for this specific job —
+   rewriting the marked sections, verifying the result renders to the same
+   page count as the original, and saving it under a
+   `[First]_[Last]_Resume_[Company]_[Role].docx` name — before the form
+   ever opens.
+6. It opens the best-scoring job's application page and fills in what it
    can respond to confidently — see "How the application gets filled"
    below for exactly what that covers and what it deliberately leaves for
-   you.
-6. It saves a screenshot of the filled-out form and **stops.** Nothing gets
+   you. The tailored resume from step 5 (or the original file, if step 5
+   didn't apply) gets uploaded for the resume field.
+7. It saves a screenshot of the filled-out form and **stops.** Nothing gets
    submitted automatically. In `--headed` mode, the actual browser window
    stays open too, so you can review and submit by hand.
 
@@ -356,7 +363,132 @@ Finally, it takes a full-page screenshot and returns a report of exactly
 what got filled (tagged `generated`/`lowConfidence` as appropriate) and
 what got skipped (tagged `required`), with a reason for every skip.
 
-### 6. Tying it together — [`src/index.ts`](src/index.ts)
+### 6. Tailoring the resume — [`src/resumeGenerator.ts`](src/resumeGenerator.ts)
+
+Runs after the best-match job is picked and before the application form
+opens. Returns `null` (nothing to do) if the resume isn't a `.docx` or has
+no detected placeholders, in which case `index.ts` just uploads the
+original file - this step never blocks the rest of the run.
+
+**Detection — `detectPlaceholders()`.** A `.docx` is a zip of XML files;
+the real content lives in `word/document.xml`. Word fragments text across
+many adjacent `<w:r>` runs (revision tracking, spell-check markers) - a
+live inspection of the real template confirmed the literal `[` character
+routinely lands in its own run, separate from the placeholder text after
+it. So detection works at the paragraph level: `parseParagraphs()` and
+`parseRuns()` regex-match `<w:p>...</w:p>` and `<w:r>...</w:r>` blocks
+directly against the raw XML string (not a full DOM parse-and-reserialize,
+which risks reformatting content outside the edited spans), tracking each
+run's exact `[xmlStart, xmlEnd)` offset, its `<w:rPr>` block, and its
+unescaped text. Paragraph plain text is the concatenation of its runs'
+text; a `\[([^\[\]]*)\]` match against that plain text is only accepted as
+a real placeholder if *every* run whose text the match overlaps carries
+`<w:i/>` (checked via `isItalicRPr()`, which also respects an explicit
+`w:val="false"`). Short, all-caps, single-run paragraphs immediately
+before a placeholder (`"PROFESSIONAL SUMMARY"`, `"CORE SKILLS"`) are
+tracked separately as the running "section header" context, not treated
+as placeholders themselves.
+
+**Choosing the right formatting to inherit.** Live inspection surfaced a
+real subtlety: in `"Technical Skills: [SQL, Python, ...]"`, the opening
+`[` run was **bold *and* italic**, while the actual skills-list content
+run right after it was italic-only. Using the `[` run's formatting as the
+template for the replacement text would have made the whole output
+incorrectly bold. Fixed by picking the run with the *most* bracket-covered
+text (`bestOverlap` in the detection loop) as the formatting template, not
+just the first one - that's reliably the real content run, not a
+punctuation-only run - then stripping its `<w:i/>`/`<w:iCs/>` tags
+(`stripItalic()`) to get the "normal" formatting to write the replacement
+in.
+
+**Generation — `generateReplacements()`.** One batched Claude tool-use
+call covers every detected placeholder in the document. The prompt is
+explicit that the bracket's *current* content is real material to
+tailor/reorder/re-emphasize, not a blank to invent from scratch, and
+carries a **strict no-fabrication rule**: only skills/tools/claims already
+present - verbatim or near-verbatim - in the full resume, `qa_context.txt`,
+or the section's own current content may appear in the output. This rule
+exists because an earlier version of the prompt let Claude "upgrade" the
+resume's generic `"CRM Platform Experience"` into the specific
+`"Salesforce"` just because the target job description asked for
+Salesforce - a real fabrication caught during testing on the actual
+Samsara JD, not a hypothetical. The strengthened prompt fixed it on the
+very next run (verified by diffing the before/after generated text
+against the source resume).
+
+That fix, however, over-corrected: the very next round of QA testing
+(across two different real job descriptions) found the Technical Skills
+line coming back byte-for-byte identical to the source template both
+times, while Core Competencies correctly changed each time. A debug
+harness that logged Claude's raw tool-use response directly (not just the
+final applied text) confirmed this was *not* an indexing/pass-through
+bug - Claude answered that placeholder every time, it just kept choosing
+not to change it. Root cause: the strict no-fabrication wording made
+"any list of named tools" read as risky enough that the safest move
+looked like touching nothing at all, rather than distinguishing
+*reordering real items* (always safe, zero fabrication risk) from
+*adding new items* (needs grounding). `looksLikeList()` now detects
+comma-heavy, non-prose content and attaches an explicit `[LIST: reorder
+by relevance...]` note to that placeholder, paired with a prompt-level
+rule that byte-for-byte-identical output is only acceptable when the
+current order genuinely is already the best fit - not as a default safe
+answer. Verified fixed by re-running the same two job descriptions: the
+two skills lines now produce genuinely different orderings per job
+(confirmed via a full mammoth-text diff of the untouched Professional
+Experience/Projects/Education sections showing them still byte-for-byte
+identical to the source, and the independent-project sentence preserved
+in both runs).
+
+A second, related fix targets the same "leave it alone by default"
+failure mode for one specific sentence: the source Professional Summary's
+mention of independent/personal project work
+(`INDEPENDENT_PROJECT_RE`, a generic pattern - not hardcoded to any one
+candidate's exact wording) was preserved in one test run and cut in
+another, with no code path making that outcome deterministic either way.
+Any placeholder whose original content matches that pattern now gets an
+explicit `[MUST PRESERVE: ...]` note, and the page-count retry's overflow
+feedback specifically instructs trimming other sections first rather than
+cutting that reference as a default response to overflow.
+
+**Splicing — `applyReplacements()`.** Placeholders are processed in
+*reverse* document order (sorted by `runXmlStart` descending) so each
+splice's offset stays valid for the ones still to come - no full-document
+reserialization, no re-parsing after each edit. Each replacement becomes
+exactly one new `<w:r>` (the chosen template `rPr` plus the generated,
+XML-escaped text); if the bracket's boundary fell mid-run rather than
+exactly on a run boundary, the leftover "before"/"after" text on either
+side is preserved as its own untouched-formatting run rather than being
+dropped.
+
+**Length verification — real rendering, not estimation.** `docxToPdf()`
+shells out to [`scripts/docx-to-pdf.ps1`](scripts/docx-to-pdf.ps1), which
+drives Microsoft Word via COM automation (`New-Object -ComObject
+Word.Application`, `Documents.Open`, `SaveAs2(path, 17)` for PDF) - the
+only way to know the *actual* rendered page count, since font metrics,
+margins, and line spacing all affect real page breaks in ways no
+character or word count can predict. `getPdfPageCount()` then reads the
+resulting PDF's page count via `pdf-lib`. The orchestrator computes the
+original template's page count once via this same pipeline, then loops
+up to `MAX_ATTEMPTS` (4): generate → splice → render → compare. On a
+mismatch, the next attempt's prompt gets explicit feedback ("too long,
+write noticeably shorter" or "too short, write more detail"), and the
+attempt closest to the original page count is kept regardless of whether
+any attempt converged exactly - `converged: false` in the result signals
+this honestly rather than silently shipping a wrong-length file. Verified
+live against real OneTrust and Samsara job descriptions: both converged
+on the original 1-page layout on the first attempt.
+
+**Naming.** `extractCompanyAndRole()` makes a small Claude tool-use call
+against the job description (scraped titles are often messy - location
+text run directly onto the role with no separator, e.g. `"Partner
+Operations AnalystRemote - US"`) to get a clean company/role pair, then
+`sanitizeFilenamePart()` strips characters illegal in Windows filenames
+and turns spaces into underscores. The final name is
+`[First]_[Last]_Resume_[Company]_[Role].docx`, with the name segment
+pulled from the parsed resume rather than hardcoded, saved into the same
+`--out` directory as the screenshot.
+
+### 7. Tying it together — [`src/index.ts`](src/index.ts)
 
 The CLI entrypoint. Parses command-line flags (`--career-url`, `--resume`,
 `--criteria`, and per-field overrides for everything `criteria.json`
@@ -406,6 +538,11 @@ Confirmed working across these runs:
 - Producing a screenshot that matches the written report exactly, every
   time this was checked.
 - Stopping before submission every time.
+- Detecting bracket+italic placeholders in a real `.docx` template,
+  tailoring them to a specific live job description with no fabricated
+  skills/tools, verifying the result renders to the same page count as the
+  original via real Word rendering, and uploading the tailored file in
+  place of the static resume - confirmed on both OneTrust and Samsara.
 
 ## What's rough or untested
 
@@ -441,6 +578,19 @@ Confirmed working across these runs:
   agent** — the sandboxed shell it runs commands in has no attached
   desktop, so it's structurally unable to open a GUI window. Works fine
   run directly by a person in their own terminal.
+- **Resume tailoring requires Microsoft Word on Windows** (COM automation
+  for the page-count check) — no LibreOffice or cross-platform fallback
+  exists yet. Degrades gracefully (warning + falls back to the static
+  file) rather than crashing the run, but it is a real external
+  dependency, same category as needing Playwright's browser binaries.
+  Only tested against a template with exactly the documented bracket+italic
+  convention - a differently-marked template (bold instead of italic,
+  `{{}}` instead of `[]`) won't be detected at all.
+- **The page-count convergence retry caps at 4 attempts** and isn't
+  guaranteed to succeed - both live test runs converged on attempt 1, so
+  the non-convergent path (closest-attempt-kept, clearly flagged) hasn't
+  actually been exercised live yet, only reasoned through and left as an
+  honest fallback.
 
 ## Known limitations (by design, not oversights)
 
@@ -459,6 +609,14 @@ Confirmed working across these runs:
 - **Runs headless by default**, specifically so it's runnable from
   anywhere including this coding session — `--headed` is there for when a
   human wants to watch and submit live from their own terminal.
+- **Resume tailoring only ever rewrites, reorders, or re-emphasizes real
+  resume content - it never introduces a skill, tool, or claim that isn't
+  already grounded there**, even when the job description explicitly asks
+  for something more specific than what the resume actually supports (a
+  generic "CRM Platform Experience" stays generic rather than becoming
+  "Salesforce" just because the job wants Salesforce). A deliberate
+  guardrail, not a gap - the alternative is a resume that oversells the
+  candidate.
 
 ## Quick file map
 
@@ -470,6 +628,8 @@ Confirmed working across these runs:
 | [`src/filter.ts`](src/filter.ts) | Cheap keyword/salary/location/experience/employment-type filtering |
 | [`src/match.ts`](src/match.ts) | Claude-based ranking of resume vs. job postings |
 | [`src/apply.ts`](src/apply.ts) | Discover and fill application form fields (by far the largest module) |
+| [`src/resumeGenerator.ts`](src/resumeGenerator.ts) | Detect + tailor bracket+italic `.docx` placeholders, verify page count via Word, save the tailored file |
+| [`scripts/docx-to-pdf.ps1`](scripts/docx-to-pdf.ps1) | PowerShell/Word-COM helper: renders a `.docx` to PDF for the page-count check |
 | [`src/index.ts`](src/index.ts) | CLI entrypoint, wires everything together |
 | [`criteria.json`](criteria.json) | Reusable screening-rules profile (titles, salary floor, locations, etc.) |
 | [`user_profile.txt` / `qa_context.txt` / `work_auth_context.txt`](.) | Gitignored personal context (not committed - create your own) |

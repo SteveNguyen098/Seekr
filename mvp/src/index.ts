@@ -10,6 +10,7 @@ import { filterByTitle, filterByLocation, passesHardRequirements, type Criteria 
 import { rankJobs, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
+import { generateTailoredResume } from "./resumeGenerator.js";
 
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
@@ -168,6 +169,36 @@ try {
 
   console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);
 
+  let resumeToUpload = resumePath;
+  if (resumePath.toLowerCase().endsWith(".docx")) {
+    console.log(`\nTailoring resume to this role...`);
+    try {
+      const generated = await generateTailoredResume(
+        anthropic,
+        resumePath,
+        best.job.descriptionText,
+        best.job.title,
+        resume.text,
+        resume.name,
+        outDir,
+        personalContext.qaContext
+      );
+      if (!generated) {
+        console.log(`  -> no bracketed+italicized placeholders detected in the resume template; using it as-is.`);
+      } else if (generated.converged) {
+        console.log(`  -> tailored resume saved (${generated.pageCount} page(s), matches the original): ${generated.path}`);
+        resumeToUpload = generated.path;
+      } else {
+        console.log(
+          `  -> WARNING: tailored resume saved but did NOT converge on the original page count after ${generated.attempts} attempt(s) - it rendered ${generated.pageCount} page(s) vs. the original's ${generated.originalPageCount}. Review it closely before using: ${generated.path}`
+        );
+        resumeToUpload = generated.path;
+      }
+    } catch (err) {
+      console.log(`  -> WARNING: resume tailoring failed (${(err as Error).message}); using the original resume file instead.`);
+    }
+  }
+
   console.log(`\nOpening application form...`);
   await openApplicationForm(page, best.job.url);
 
@@ -176,7 +207,7 @@ try {
     page,
     anthropic,
     resume,
-    resumePath,
+    resumeToUpload,
     best.job.descriptionText,
     outDir,
     personalContext
