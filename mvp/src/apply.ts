@@ -31,7 +31,11 @@ function allContexts(page: Page): FormContext[] {
 
 export interface DiscoveredField {
   selector: string;
-  tag: "INPUT" | "TEXTAREA" | "SELECT";
+  // Usually INPUT/TEXTAREA/SELECT, but custom combobox widgets aren't
+  // always built on a real <input> - some (confirmed live on Rippling's
+  // ATS) render the clickable trigger as a bare <div role="combobox">,
+  // so this has to accept whatever tag the trigger actually is.
+  tag: string;
   type: string;
   label: string;
   required: boolean;
@@ -73,9 +77,16 @@ const AI_POLICY_RE = /\bAI\b.*(policy|tool|assist|usage|disclos)/i;
 // OFCCP-mandated EEOC self-ID forms use inconsistent phrasing across
 // sites/forms: the standard veteran form says "don't wish to answer" while
 // the standard disability form (CC-305) says "don't want to answer" -
-// needs both "wish" and "want", each in "don't/doesn't/do not/does not" form.
+// needs "wish"/"want"/"consent"/"agree" (the last two cover phrasing like
+// "I do not consent to disclose this information", and double as the
+// decline option for opt-in-style questions like SMS consent below), each
+// in "don't/doesn't/do not/does not" form.
 const DECLINE_RE =
-  /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want)|not disclosed|n\/a\b/i;
+  /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want|consent|agree)|not disclosed|n\/a\b/i;
+// Matches the radio/checkbox OPTION that opts out of receiving text
+// messages/SMS - paired with DECLINE_RE below so the same "no thanks"
+// phrasing detection doubles for both EEOC decline options and this.
+const TEXT_MESSAGE_RE = /text messag|\bsms\b/i;
 const HOW_HEARD_OPPORTUNITY_CANDIDATES = ["LinkedIn", "LinkedIn Job Posting", "LinkedIn Jobs", "Social Media", "Professional Network", "Other"];
 const HOW_HEARD_CANDIDATES = ["Company careers page", "Company website", "Careers page", "Website", "Online research", "Search engine", "Other"];
 const AI_POLICY_CANDIDATES = ["No"];
@@ -154,14 +165,39 @@ export async function findFormContext(page: Page): Promise<FormContext> {
 }
 
 export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[]> {
-  return ctx.$$eval("input, textarea, select", (els) =>
+  // input/textarea/select covers the vast majority of real form controls
+  // (Greenhouse, Lever). [role="combobox"] catches custom widgets that
+  // aren't built on a real <input> at all - confirmed live on Rippling's
+  // ATS, where gender/veteran/disability/hispanic-latino all render as a
+  // bare <div role="combobox">, invisible to the narrower query alone.
+  return ctx.$$eval("input, textarea, select, [role='combobox']", (els) =>
     els
       .map((el, i) => {
-        const tag = el.tagName as "INPUT" | "TEXTAREA" | "SELECT";
+        const tag = el.tagName;
         const type = (el as HTMLInputElement).type || tag.toLowerCase();
         if (["hidden", "submit", "button"].includes(type)) return null;
 
-        let label = el.getAttribute("aria-label") || "";
+        // Precedence follows real ARIA semantics: aria-labelledby (points
+        // at another element that holds the actual question text) outranks
+        // aria-label, which outranks an associated <label>, which outranks
+        // placeholder text (the weakest signal - often just example input,
+        // not a real label). Confirmed live: Rippling's custom widgets
+        // expose only a generic "Search"/"Select..." aria-label/placeholder
+        // directly on the control, while the real question ("Please
+        // identify your race", "Pronouns") only exists on the element
+        // aria-labelledby points to - skipping this resolution was why
+        // those fields were previously invisible to the sensitive-field
+        // safety net and got answered instead of declined.
+        let label = "";
+        const labelledbyId = el.getAttribute("aria-labelledby");
+        if (labelledbyId) {
+          label = labelledbyId
+            .split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent?.trim() || "")
+            .filter(Boolean)
+            .join(" ");
+        }
+        if (!label) label = el.getAttribute("aria-label") || "";
         if (!label && el.id) {
           const labelEl = document.querySelector(`label[for="${el.id}"]`);
           label = labelEl?.textContent?.trim() || "";
@@ -171,6 +207,41 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           label = closestLabel?.textContent?.trim() || "";
         }
         if (!label) label = el.getAttribute("placeholder") || "";
+        // A generic instruction word ("Select", "Select...", "Search",
+        // "Choose") isn't a real label - it's UI chrome that happens to be
+        // set as the aria-label/placeholder, not the actual question.
+        // Confirmed live and load-bearing: two Rippling fields both had
+        // aria-label="Select" directly on the control (no aria-labelledby
+        // at all), so without this check the cascade above stopped right
+        // there, thinking it had found a real label - Claude then saw two
+        // *identical*, contentless "Select" fields with nothing to tell
+        // them apart ("do you live in an accepted state" vs. "do you need
+        // visa sponsorship") and answered one of them wrong. Treating this
+        // as empty lets the DOM-proximity fallback below run instead,
+        // which found the real question text for both.
+        if (/^(select|search|choose)\.{0,3}$/i.test(label.trim())) label = "";
+        if (!label) {
+          // Last resort: some fields (confirmed live on Rippling's ATS -
+          // both per-job "custom questions" like salary requirements, and
+          // "standard" fields like state-residency/sponsorship) have their
+          // question text sitting in a plain sibling element with zero
+          // programmatic connection to the control at all - no
+          // aria-labelledby, no aria-label, no label[for], no wrapping
+          // <label>, not even a placeholder. The only remaining signal is
+          // DOM proximity: walk up from the control and take the first
+          // preceding sibling with substantial text. How far up varies by
+          // field - confirmed live that the state-residency question's
+          // wrapper nests 6 levels deep before a previousElementSibling
+          // with real text appears, so this goes deeper than it might seem
+          // to need to. Weakest signal of all (position, not semantics),
+          // which is exactly why it's checked dead last.
+          let node: Element | null = el;
+          for (let i = 0; i < 8 && node && !label; i++) {
+            const text = node.previousElementSibling?.textContent?.trim() || "";
+            if (text.length > 2 && text.length < 300) label = text;
+            node = node.parentElement;
+          }
+        }
 
         // Primary signal: the real HTML/ARIA required attribute. Fallback:
         // a visible asterisk in the label text, for forms that mark a
@@ -211,12 +282,39 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           el.getAttribute("aria-autocomplete") === "list" ||
           el.getAttribute("aria-haspopup") === "true";
 
-        const idOrName = `${el.id} ${el.getAttribute("name") || ""}`.trim();
+        // data-testid is a common automation-hook convention (confirmed
+        // live: Rippling's file-upload widgets have empty id/name/
+        // aria-label but data-testid="input-resume"/"input-cover_letter" -
+        // without this the resume upload had nothing to match against at
+        // all and silently never fired).
+        const idOrName = `${el.id} ${el.getAttribute("name") || ""} ${el.getAttribute("data-testid") || ""}`.trim();
 
         return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
+}
+
+/**
+ * Checks a checkbox/radio, tolerating a common accessible-widget pattern:
+ * the real native input is visually hidden (opacity/position tricks) behind
+ * a custom-styled replacement, with aria-labelledby pointing at the visible
+ * text that's the *actual* clickable surface. Playwright's own .check()
+ * correctly refuses to act on an invisible element - confirmed live on
+ * Rippling's ATS, where every radio/checkbox is built this way and a plain
+ * .check() times out. Falls back to clicking whatever aria-labelledby
+ * resolves to, which is what a real user would actually click.
+ */
+async function checkField(ctx: FormContext, selector: string): Promise<boolean> {
+  const direct = await ctx.check(selector, { timeout: 3000 }).then(() => true).catch(() => false);
+  if (direct) return true;
+  const labelledbyId = await ctx.$eval(selector, (el) => el.getAttribute("aria-labelledby")).catch(() => null);
+  if (!labelledbyId) return false;
+  const firstId = labelledbyId.split(/\s+/)[0];
+  return ctx
+    .click(`[id="${firstId}"]`, { timeout: 3000 })
+    .then(() => true)
+    .catch(() => false);
 }
 
 /**
@@ -478,13 +576,53 @@ function buildContextBlocks(context: PersonalContext): string {
   ].filter(Boolean).join("\n\n");
 }
 
+// Matches an open-ended "what's your desired/expected salary" style
+// question specifically - not the separate yes/no "do you accept the
+// listed range" shape, which already has a confident answer without
+// needing research (see the salary guidance in the main prompt below).
+const SALARY_OPEN_ENDED_RE = /salary (requirement|expectation)|desired (salary|compensation|pay)|expected (salary|compensation|pay)|compensation expectation/i;
+
+/**
+ * A candidate's own instruction: for open-ended salary questions, look up
+ * real current market data rather than relying only on Claude's trained
+ * knowledge (which can be stale). Kept as its own small call, separate from
+ * the main batched answerWithClaude() - that call forces a specific tool
+ * choice (answer_fields) for clean structured output in a single turn,
+ * which isn't compatible with the back-and-forth a web-search-enabled call
+ * needs. This one runs with an ordinary text response instead, and its
+ * findings get threaded into the main prompt as grounding.
+ */
+async function researchSalaryRange(anthropic: Anthropic, jobTitle: string, jobDescription: string): Promise<string> {
+  try {
+    const message = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 512,
+      tools: [{ type: "web_search_20260318", name: "web_search", max_uses: 3 } satisfies Anthropic.WebSearchTool20260318],
+      messages: [
+        {
+          role: "user",
+          content: `Search the web for the current, typical salary range for this specific role, using real sources (e.g. Glassdoor, Levels.fyi, Payscale, LinkedIn Salary, Indeed, Salary.com). Job title: "${jobTitle}".\n\nJob description (for context on seniority/location/company):\n${jobDescription.slice(0, 2000)}\n\nRespond with just the estimated range as plain text (e.g. "$70,000-$85,000 per year"), plus a brief one-sentence note on what it's based on. If you can't find reliable, current data, say so plainly rather than guessing.`,
+        },
+      ],
+    });
+    const textBlock = message.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    return textBlock?.text?.trim() || "";
+  } catch {
+    // Not essential to the run - if the search fails for any reason (API
+    // hiccup, tool unavailable), fall back silently to the existing
+    // trained-knowledge estimate in the main prompt rather than blocking.
+    return "";
+  }
+}
+
 async function answerWithClaude(
   anthropic: Anthropic,
   resume: Resume,
   jobDescription: string,
   context: PersonalContext,
   fields: AnswerableField[],
-  isRetry = false
+  isRetry = false,
+  salaryResearch = ""
 ): Promise<Map<string, ClaudeAnswer>> {
   if (fields.length === 0) return new Map();
 
@@ -496,6 +634,7 @@ async function answerWithClaude(
     .join("\n");
 
   const contextBlocks = buildContextBlocks(context);
+  const salaryResearchBlock = salaryResearch ? `\n\nLive salary research for this specific role (from a real web search just now - use this as the primary source for any open-ended salary question, ahead of your own trained knowledge, and mark HIGH confidence when it found solid data):\n${salaryResearch}` : "";
 
   const retryHasMultiSelect = isRetry && fields.some((f) => f.multiSelect);
   const retryNotice = isRetry
@@ -514,7 +653,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): if the job description lists a range, say you're fine with that listed range (high confidence). If no range is listed, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): if the job description lists a range, say you're fine with that listed range (high confidence). Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -663,7 +802,8 @@ export async function fillApplication(
   resumeFilePath: string,
   jobDescription: string,
   outDir: string,
-  context: PersonalContext
+  context: PersonalContext,
+  jobTitle = ""
 ): Promise<FillReport> {
   const formCtx = await findFormContext(page);
   const fields = await discoverFields(formCtx);
@@ -709,13 +849,36 @@ export async function fillApplication(
           // selected, they swap the input out of the DOM entirely and
           // replace it with a "file selected" state, so the *original*
           // selector disappearing right after a successful setInputFiles()
-          // is itself a positive signal, not a failure - only a still-present
-          // input reporting zero files means the selection didn't register.
+          // is itself a positive signal, not a failure.
           const filesLength = await formCtx
             .$eval(field.selector, (el) => (el as HTMLInputElement).files?.length ?? 0)
             .catch(() => null);
           if (filesLength === 0) {
-            skipped.push({ label: field.label || "Resume upload", reason: "failed to upload resume file - attach it manually", required: field.required });
+            // A still-present input reporting zero files is ambiguous, not
+            // conclusive - confirmed live on Rippling's ATS that a widget
+            // can keep the same input in the DOM while its own React state
+            // (not the native input) tracks the upload, resetting
+            // input.files back to empty immediately after consuming it,
+            // even though the upload genuinely succeeded (visually
+            // confirmed: the dropzone UI swapped to a "<filename> ×" chip).
+            // Checking for "any file-extension-looking text on the page" is
+            // too broad a signal - forms commonly show static instructional
+            // text like "Accepted file types: pdf, doc, docx" regardless of
+            // upload state. Look for a distinctive prefix of the actual
+            // uploaded filename instead (long filenames get visually
+            // truncated with "...", so only the first ~15 characters are
+            // safe to rely on being shown intact).
+            await delay(300);
+            const namePrefix = path.basename(resumeFilePath, path.extname(resumeFilePath)).slice(0, 15);
+            const looksUploaded = await formCtx
+              .locator("body")
+              .evaluate((body, prefix) => (body.textContent || "").includes(prefix), namePrefix)
+              .catch(() => false);
+            if (looksUploaded) {
+              filled.push({ label: field.label || "Resume upload", value: path.basename(resumeFilePath) });
+            } else {
+              skipped.push({ label: field.label || "Resume upload", reason: "failed to upload resume file - attach it manually", required: field.required });
+            }
           } else {
             await delay(3000);
             filled.push({ label: field.label || "Resume upload", value: path.basename(resumeFilePath) });
@@ -734,9 +897,21 @@ export async function fillApplication(
       // broader scope (marketing, third-party sharing, indefinite
       // retention) is excluded by isStandardRecruitmentConsent and falls
       // through to the manual-review branch below instead.
-      const ok = await formCtx.check(field.selector).then(() => true).catch(() => false);
+      const ok = await checkField(formCtx, field.selector);
       if (ok) filled.push({ label: field.label, value: "Agreed" });
       else skipped.push({ label: field.label, reason: "standard recruitment-data consent - could not check it, please check manually", required: field.required });
+      continue;
+    }
+
+    if (field.type === "radio" && TEXT_MESSAGE_RE.test(field.label) && DECLINE_RE.test(field.label)) {
+      // SMS/text-message opt-in questions render as a "Yes, I consent" /
+      // "No, I don't consent" radio pair, each option individually
+      // labeled - a candidate's own instruction: always decline text
+      // message updates, so click whichever radio's own label is the
+      // opt-out one.
+      const ok = await checkField(formCtx, field.selector);
+      if (ok) filled.push({ label: field.label, value: field.label });
+      else skipped.push({ label: field.label, reason: "text-message consent opt-out - could not select it, please select manually", required: field.required });
       continue;
     }
 
@@ -899,8 +1074,15 @@ export async function fillApplication(
     // Everything else (custom written questions, salary, relocation,
     // work-auth/sponsorship, etc.) goes to Claude, including comboboxes -
     // those are no longer unconditionally skipped now that there's real
-    // grounding to answer them from.
-    if (field.tag === "SELECT" || field.tag === "INPUT" || field.tag === "TEXTAREA") {
+    // grounding to answer them from. isCombobox is checked in addition to
+    // the tag allowlist, not instead of it - a combobox's clickable
+    // trigger isn't always a real <input>/<select> (confirmed live on
+    // Rippling's ATS: state-residency and sponsorship both render as a
+    // bare <div role="combobox">), and without this check those fields
+    // were being discovered but then silently dropped here - appearing in
+    // neither the filled nor skipped report, not even a "left blank"
+    // signal.
+    if (field.tag === "SELECT" || field.tag === "INPUT" || field.tag === "TEXTAREA" || field.isCombobox) {
       // Give Claude the real, exact options for a combobox rather than
       // having it guess a plausible-sounding value blind - a guess like
       // "1-2 years" against real buckets of "0-1 years"/"2-3 years"/"+4
@@ -918,7 +1100,15 @@ export async function fillApplication(
   }
 
   if (toAnswer.length > 0) {
-    const answers = await answerWithClaude(anthropic, resume, jobDescription, context, toAnswer);
+    // A candidate's own instruction: open-ended salary questions should
+    // use real current market data, not just Claude's trained knowledge.
+    // Only worth the extra call when such a field actually exists - the
+    // separate yes/no "do you accept the listed range" shape already has
+    // a confident answer without needing research.
+    const hasOpenEndedSalaryQuestion = toAnswer.some((f) => SALARY_OPEN_ENDED_RE.test(f.label));
+    const salaryResearch = hasOpenEndedSalaryQuestion ? await researchSalaryRange(anthropic, jobTitle, jobDescription) : "";
+
+    const answers = await answerWithClaude(anthropic, resume, jobDescription, context, toAnswer, false, salaryResearch);
     const hasAnswer = (f: AnswerableField, a: ClaudeAnswer | undefined) =>
       !!a && (f.multiSelect ? a.values.length > 0 : !!a.value);
 
@@ -929,7 +1119,7 @@ export async function fillApplication(
     const stillEmptyRequired = toAnswer.filter((f) => f.required && !hasAnswer(f, answers.get(f.selector)));
     let retried = false;
     if (stillEmptyRequired.length > 0) {
-      const retryAnswers = await answerWithClaude(anthropic, resume, jobDescription, context, stillEmptyRequired, true);
+      const retryAnswers = await answerWithClaude(anthropic, resume, jobDescription, context, stillEmptyRequired, true, salaryResearch);
       for (const [selector, answer] of retryAnswers) {
         const field = stillEmptyRequired.find((f) => f.selector === selector);
         if (field && hasAnswer(field, answer)) answers.set(selector, answer);

@@ -210,7 +210,8 @@ try {
     resumeToUpload,
     best.job.descriptionText,
     outDir,
-    personalContext
+    personalContext,
+    best.job.title
   );
 
   const groundTruth = report.filled.filter((f) => !f.generated);

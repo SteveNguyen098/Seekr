@@ -62,9 +62,14 @@ resume, find one matching job and fill out its application form.
      a range (submitting the application already implies you've seen and
      are fine with it). An open-ended "what's your desired salary?"
      follows `qa_context.txt`'s tiered logic instead: the listed range if
-     there is one, otherwise Claude's best estimate for the role/location,
-     otherwise a flat default - and that one *is* marked low-confidence,
-     since it's a genuine estimate rather than a stated fact.
+     there is one; otherwise a live web search for the current market rate
+     for that specific role (high confidence, since it's real current
+     data); otherwise Claude's own best estimate, marked low-confidence
+     since that one's a genuine guess rather than sourced data.
+   - "Do you consent to receiving text message/SMS updates about your
+     application?" always gets declined ("No, I do not consent..."),
+     regardless of the exact phrasing - a standing instruction, not an
+     AI judgment call.
 8. Every field the tool couldn't confidently fill is listed in a
    **required vs. optional** breakdown. Required detection checks the real
    HTML `required`/`aria-required` attribute first, and falls back to a
@@ -227,6 +232,9 @@ npx tsx src/index.ts \
 - `job-boards.greenhouse.io/samsara` (Greenhouse, embedded via iframe on
   Samsara's own branded domain - see below)
 - `jobs.lever.co/palantir` (Lever)
+- `ats.rippling.com/patientnow` (Rippling ATS - a third platform, structurally
+  different from Greenhouse/Lever in ways that mattered, see Known
+  limitations)
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
@@ -245,6 +253,73 @@ instance of this was caught and fixed during testing).
 - Career page scraping has fast paths for Greenhouse and Lever, and a
   generic link-heuristic fallback for everything else (Workday, Ashby,
   etc. haven't been tested live yet).
+- **Field label detection follows real ARIA precedence**
+  (`aria-labelledby` → `aria-label` → associated `<label>` → placeholder),
+  and field *discovery* isn't limited to real `<input>`/`<select>`/
+  `<textarea>` tags - a `[role="combobox"]` element is picked up regardless
+  of what tag it's built on. Both were genuine gaps surfaced testing a
+  third ATS platform (Rippling), not something anticipated in advance:
+  several demographic questions (gender, Hispanic/Latino, veteran,
+  disability) render as a bare `<div role="combobox">` with no underlying
+  `<input>` at all, invisible to a query that only looked for form-control
+  tags - and two fields that *were* discoverable (race, pronouns) exposed
+  only a generic "Search"/"Select..." placeholder directly on the control,
+  with their real question text only reachable by resolving
+  `aria-labelledby`. The second gap was the more serious one: without it,
+  the sensitive-field safety net never saw the real label text ("Please
+  identify your race") and treated the field as an ordinary open question -
+  Claude answered it with a specific, fabricated race rather than
+  declining. Confirmed fixed with both bugs closed: all five demographic
+  questions now correctly decline on that same live form.
+- **Discovering a field isn't the same as it actually getting answered** -
+  a second gap on the same round of testing: the code that decides which
+  discovered fields get sent to Claude only recognized `SELECT`/`INPUT`/
+  `TEXTAREA` tags, so the newly-discoverable `<div role="combobox">` fields
+  (state-residency, sponsorship) were found but then silently dropped -
+  present in neither the filled nor skipped report, no signal at all that
+  they existed. Fixed by also checking `isCombobox` regardless of tag.
+- **A generic instruction word standing in for a real label is worse than
+  no label at all - it looks trustworthy but isn't.** Confirmed live and a
+  genuine near-miss: two Rippling fields (state-residency, sponsorship)
+  both exposed `aria-label="Select"` directly on the control, with no
+  `aria-labelledby` pointing anywhere else. That's technically a non-empty
+  label, so the detection cascade stopped right there - Claude then saw
+  two *identical*, contentless "Select" fields with nothing to tell them
+  apart, and answered one of them wrong (said "Yes" to needing visa
+  sponsorship, backwards from the correct answer). Caught by checking the
+  actual screenshot rather than trusting a "field was answered" report at
+  face value. Fixed by treating "Select"/"Search"/"Choose" as equivalent
+  to no label at all, so the same DOM-proximity fallback used for
+  completely unlabeled fields gets a chance to find the real question text
+  instead - confirmed both fields now resolve their real labels and answer
+  correctly.
+- **Live salary research.** Open-ended "what are your salary
+  requirements?" questions now get a real web search for current market
+  data (via the Anthropic SDK's hosted web-search tool) rather than relying
+  only on Claude's trained knowledge, which can be stale - a standing
+  instruction, only triggered when such a question actually exists on the
+  form (the separate yes/no "do you accept the listed range" shape doesn't
+  need it). Runs as its own small call, not part of the main batched
+  answer call, since that one forces a specific structured-output tool
+  choice that isn't compatible with the back-and-forth a search-enabled
+  call needs - the research findings get folded into the main prompt as
+  grounding instead.
+- **Checkboxes/radios that are visually hidden behind a custom-styled
+  replacement** (common in modern component libraries - the real `<input>`
+  has zero size/opacity and a sibling element carries the actual visible,
+  clickable UI) fall back to clicking whatever the input's
+  `aria-labelledby` resolves to, since Playwright correctly refuses to
+  click something that isn't actually visible. Confirmed live on the same
+  Rippling form: a plain `.check()` timed out on every radio/checkbox
+  until this fallback was added.
+- **A file upload can succeed even when the native `<input>` reports zero
+  files afterward.** Confirmed live: one widget keeps the same upload
+  input in the DOM but resets its own `.files` the instant it consumes the
+  selection into its own state - visually the upload clearly succeeded (a
+  filename chip replaced the dropzone), but the file input itself looked
+  empty. Before concluding a real failure, the tool now checks whether a
+  distinctive prefix of the uploaded filename shows up anywhere on the
+  page.
 - **Custom combobox/react-select-style dropdowns are answerable**, not
   skipped outright. Since the option list for a combobox doesn't exist
   until it's actually opened, the tool opens it once first to harvest the
@@ -304,10 +379,20 @@ instance of this was caught and fixed during testing).
 - Cover letter upload is not generated/attached.
 - Resume parsing supports `.docx` and `.txt` only (no `.pdf` yet).
 - Field discovery relies on labels being programmatically associated with
-  their inputs (`aria-label`, `<label for>`, wrapping `<label>`, or
-  placeholder text). Fields with no such association are always left
-  blank rather than guessed at - on more complex forms this can leave a
-  couple dozen fields unlabeled and skipped.
+  their inputs (`aria-labelledby`, `aria-label`, `<label for>`, wrapping
+  `<label>`, or placeholder text). Fields with none of these are always
+  left blank rather than guessed at - on more complex forms this can leave
+  a couple dozen fields unlabeled and skipped. Confirmed live on
+  PatientNow's Rippling-hosted form: three fields (salary requirements,
+  start date, referral source) genuinely expose no label through any of
+  these signals at all - a real remaining gap, not something the
+  `aria-labelledby` fix above resolved, since there's simply nothing to
+  resolve for these particular fields.
+- The phone number field on that same Rippling form is reported as failed
+  ("entered ... but it did not persist") even though it actually does get
+  filled correctly - the widget silently reformats whatever's typed into
+  it, and the verification check compares exact strings. A cousin of the
+  file-upload false-negative above, not yet given the same treatment.
 - **Resume tailoring requires Word (Windows only)** for the page-count
   verification. It degrades gracefully without it - a warning is logged
   and the static resume file is uploaded instead - but there's currently

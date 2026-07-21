@@ -148,17 +148,115 @@ figures out whether the real form lives in the main page or one of its
 frames, by counting fields in each and picking whichever has the most.
 Every downstream function operates on that resolved `Page | Frame`.
 
-**Discovering fields.** `discoverFields(ctx)` reads every input, dropdown,
-and text box and figures out, for each one: its human-readable label
-(checking `aria-label`, an associated `<label>`, a wrapping `<label>`, then
-placeholder text, in that order); whether it's *required* (the real
+**Discovering fields.** `discoverFields(ctx)` queries `input, textarea,
+select, [role="combobox"]` — not just the three form-control tags, because
+a combobox's clickable trigger isn't always a real `<input>`. Confirmed
+live on a Rippling-hosted form (PatientNow): gender, Hispanic/Latino,
+veteran status, and disability status all render as a bare `<div
+role="combobox">` with no underlying `<input>` anywhere in their markup,
+completely invisible to a query that only looked for form-control tags —
+not mislabeled, not skipped with a reason, just absent from the field list
+entirely.
+
+For each matched element it figures out: its human-readable label
+(`aria-labelledby` resolved to the referenced element's own text first,
+then `aria-label`, then an associated `<label>`, then a wrapping `<label>`,
+then placeholder text last — this precedence follows real ARIA semantics,
+and getting it right mattered: two more fields on that same Rippling form
+*were* being discovered — their trigger was a real `<input>` — but exposed
+only a generic "Search"/"Select..." placeholder directly on the control,
+with the actual question text ("Please identify your race", "Pronouns")
+only reachable by resolving `aria-labelledby`. Skipping that resolution
+meant the sensitive-field safety net, which matches against the discovered
+label text, never saw the word "race" at all — the field looked like an
+ordinary open question, so Claude answered it with a specific, invented
+race rather than declining. That's a materially worse failure than a
+missed field: a fabricated demographic answer, not just an empty one.
+Confirmed fixed — the same live form now correctly declines all five
+demographic questions); whether it's *required* (the real
 `required`/`aria-required` attribute first, falling back to a visible
 asterisk in the label only when that's absent); whether it's a *combobox*
-(a custom-built dropdown widget like React-Select, detected via
-`role="combobox"` or similar ARIA attributes — these need fundamentally
-different handling than a plain HTML `<select>`, see below); and whether
-it's *multi-select* (a native `<select multiple>` — combobox multi-select
-can only be detected once the widget is opened, so that happens later).
+(detected via `role="combobox"` or similar ARIA attributes — these need
+fundamentally different handling than a plain HTML `<select>`, see below);
+and whether it's *multi-select* (a native `<select multiple>` — combobox
+multi-select can only be detected once the widget is opened, so that
+happens later).
+
+**Discovery isn't the same as dispatch — a bug in the fix for the bug
+above.** Broadening `discoverFields()`'s query to catch `[role="combobox"]`
+regardless of tag (above) wasn't enough on its own: the code in
+`fillApplication()` that decides which discovered fields actually get sent
+to Claude checked `field.tag === "SELECT" || field.tag === "INPUT" ||
+field.tag === "TEXTAREA"` — a `DIV`-tagged combobox matches none of those,
+so two more fields (state-residency, sponsorship) were being discovered
+correctly and then silently dropped one step later, present in neither the
+filled nor skipped report. Fixed by also checking `field.isCombobox` in
+that condition, independent of tag.
+
+**A generic instruction word is a false "found a label" signal — worse
+than an honest empty one.** A `DOM`-proximity fallback was added to
+`discoverFields()`'s label cascade as the very last resort (below
+placeholder), for fields with genuinely zero programmatic label of any
+kind — confirmed live on Rippling's per-job "custom questions" (salary
+requirements, start date, referral source), which sit in a plain sibling
+`<p>` with no `aria-labelledby`/`aria-label`/`label[for]`/wrapping
+`<label>`/placeholder at all. It walks up from the control checking
+`previousElementSibling` text at each level; confirmed live that this
+needs to go up to 8 levels for some fields (the state-residency question's
+wrapper nests 6 levels deep before a sibling with real text appears) — a
+depth that would look excessive without that evidence.
+
+That fallback only fires when `label` is still empty, which surfaced a
+second, more serious bug: two fields (state-residency, sponsorship) both
+had `aria-label="Select"` set *directly* on the control, no
+`aria-labelledby` at all. That's a non-empty string, so the cascade
+stopped there, confident it had found a real label — Claude then saw two
+*identical*, contentless "Select" fields with no way to tell them apart,
+and answered one of them wrong: "Yes" to needing visa sponsorship, the
+opposite of correct. This was caught by checking the actual screenshot
+rather than trusting "the field got an answer" as proof the answer was
+right — a live reminder that "non-empty" and "correct" aren't the same
+thing to verify. Fixed by treating `"Select"`/`"Search"`/`"Choose"`
+(optionally with trailing dots) as equivalent to an empty label, so the
+DOM-proximity fallback gets a chance to find the real question text
+instead of a generic placeholder word. Confirmed fixed: both fields now
+resolve their real question and answer correctly.
+
+**Live salary research.** A candidate's own instruction: open-ended
+"what are your salary requirements?" questions should use real current
+market data, not just Claude's trained knowledge (which can be stale).
+`researchSalaryRange()` is a small, separate call using the Anthropic
+SDK's hosted `web_search_20260318` tool (confirmed available in
+`@anthropic-ai/sdk` 0.110.0), triggered only when `toAnswer` actually
+contains a field matching `SALARY_OPEN_ENDED_RE` — the separate yes/no
+"do you accept the listed range" shape already has a confident answer
+without needing research, so no call is wasted when it isn't useful. This
+runs as its own call rather than folding `web_search` into the main
+batched `answerWithClaude()` call, because that call forces a specific
+tool choice (`answer_fields`) for clean single-turn structured output,
+which doesn't compose with the back-and-forth a search-enabled call
+needs (Claude would need to call `web_search`, see results, *then* call
+`answer_fields` — a different shape of interaction than a single forced
+tool call supports). The research findings get folded into the main
+prompt as an extra grounding block instead, with guidance to prefer them
+over Claude's own trained-knowledge estimate whenever present. Verified
+live: a real search returned `$58,000-$85,000` for the tested role,
+visibly different from the job posting's own stated `$60,000-$72,000` —
+confirming genuine research happened rather than the call just echoing
+back the JD's own number.
+
+**Interacting with a visually-hidden native input.** A common accessible
+component pattern — confirmed live, again on the Rippling form, for every
+radio and checkbox on the page — hides the real `<input>` (zero size or
+opacity) behind a custom-styled sibling that's the actual visible,
+clickable surface, with `aria-labelledby` pointing at the text a user would
+actually click. Playwright's `.check()`/`.click()` correctly refuse to act
+on an element that isn't visible, which is exactly right for a genuinely
+inert element but wrong here — the input is real and functional, just
+invisibly positioned by design. `checkField(ctx, selector)` tries a normal
+`.check()` first, and if that fails, clicks whatever the input's
+`aria-labelledby` resolves to instead — the same target a real user's
+click would land on.
 
 **The combobox problem, and how it's solved.** Typing a value into a
 combobox with `.fill()` looks like it works — no error is thrown — but the
@@ -206,15 +304,26 @@ pick like a single-select does.
 
 **Deciding what to do with each field**, in order:
 1. **Resume file upload** — matched by "resume"/"cv" appearing in the
-   field's id, name, or label (not hardcoded to one ATS's convention),
-   excluding anything that also says "cover" so a cover-letter slot isn't
-   grabbed instead. Verified after upload two ways: first that the
-   browser actually registered a file (`input.files.length > 0`), then
-   — since some widgets remove the file input from the DOM the instant a
-   file is accepted, replacing it with a "file selected" UI — the
-   *element disappearing* right after a successful upload call is treated
-   as a positive signal, not a failure; only a still-present input
-   reporting zero files counts as a real failure.
+   field's id, name, `data-testid`, or label (not hardcoded to one ATS's
+   convention), excluding anything that also says "cover" so a
+   cover-letter slot isn't grabbed instead. `data-testid` is a recent
+   addition: confirmed live on a Rippling-hosted form that a file input
+   can have completely empty `id`/`name`/`aria-label` — nothing at all for
+   the id/name-based hint to match — while still carrying
+   `data-testid="input-resume"`, a common automation-hook convention.
+   Verified after upload three ways, in order: first that the browser
+   actually registered a file (`input.files.length > 0`); then — since
+   some widgets remove the file input from the DOM the instant a file is
+   accepted, replacing it with a "file selected" UI — the *element
+   disappearing* right after a successful upload call is treated as a
+   positive signal too; finally, for a still-present input reporting zero
+   files (confirmed live: a third real pattern, where a widget keeps the
+   *same* input in the DOM but resets its own `.files` the instant it
+   consumes the selection into its own React state — visually the upload
+   had clearly succeeded, a filename chip replaced the dropzone, but the
+   native input alone looked empty) — checks whether a distinctive prefix
+   of the uploaded filename shows up anywhere on the page before
+   concluding it's a real failure.
 2. **Standard recruitment-data consent** — a checkbox or dropdown whose
    text is a narrow "consent to processing my data to consider my
    application" (detected via `isStandardRecruitmentConsent()`, which
@@ -264,7 +373,17 @@ pick like a single-select does.
    entirely and fell through to Claude instead. That was the actual root
    cause behind that field intermittently coming back unanswered in live
    runs — not generic LLM non-determinism, though see point 8 below for
-   the further fallback that also now covers cases like it.
+   the further fallback that also now covers cases like it. "Do you
+   consent to receiving text message/SMS updates?" always gets declined —
+   a standing instruction, not an AI judgment call. These questions
+   commonly render as a `Yes`/`No` radio *pair*, each option individually
+   labeled with its own full sentence rather than one field with two
+   values, so this one doesn't route through `answerDirectly()` like the
+   others — it's matched directly in the main field loop, checking whether
+   a `radio`-type field's own resolved label mentions text
+   messages/SMS *and* matches the same decline-phrasing regex
+   (`DECLINE_RE`) used for EEOC fields, then calls `checkField()` (see
+   above) on it.
 6. **No discoverable label at all** — left alone. Can't safely answer
    something with zero information about what's being asked.
 7. **Known identity and contact fields** (first/last name, email, phone,
@@ -515,6 +634,7 @@ boards using your actual resume:
 | OneTrust | Greenhouse | Genuinely Atlanta-based match; personal-context fields first proven live |
 | Samsara | Greenhouse (iframe-embedded on their own domain) | The hardest form by far — iframe detection, combobox scoping/harvesting, multi-select, and the retry mechanism were all proven or fixed here |
 | Iterable | Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
+| PatientNow | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
 
 Confirmed working across these runs:
 - Scraping a real career page and finding every open posting.
