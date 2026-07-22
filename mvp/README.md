@@ -235,6 +235,9 @@ npx tsx src/index.ts \
 - `ats.rippling.com/patientnow` (Rippling ATS - a third platform, structurally
   different from Greenhouse/Lever in ways that mattered, see Known
   limitations)
+- `jobs.ashbyhq.com/anglehealth` (Ashby - a fourth platform; its own EEOC
+  radio groups and Yes/No screening-question button pairs each surfaced
+  their own distinct shape, see Known limitations)
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
@@ -251,8 +254,16 @@ instance of this was caught and fixed during testing).
 ## Known limitations (POC scope)
 
 - Career page scraping has fast paths for Greenhouse and Lever, and a
-  generic link-heuristic fallback for everything else (Workday, Ashby,
-  etc. haven't been tested live yet).
+  generic link-heuristic fallback for everything else (Workday hasn't been
+  tested live yet). Confirmed live that the fallback doesn't work on
+  Ashby's listing pages specifically - `jobs.ashbyhq.com/anglehealth`
+  returns 0 postings from `listJobs()` even though the site clearly has
+  openings - so applying to a specific known Ashby job currently means
+  pointing directly at that job's own URL rather than the company's
+  listing page. Not investigated further since it wasn't blocking (the
+  specific job URL was already known); the fix, if needed later, is
+  presumably an Ashby-specific listing-page selector alongside the
+  existing Greenhouse/Lever ones.
 - **Field label detection follows real ARIA precedence**
   (`aria-labelledby` → `aria-label` → associated `<label>` → placeholder),
   and field *discovery* isn't limited to real `<input>`/`<select>`/
@@ -357,15 +368,93 @@ instance of this was caught and fixed during testing).
   not a real-time search. This is a deliberate scope call for the POC, not
   a technical ceiling; wiring up Anthropic's hosted web-search tool would
   be the natural next step if accuracy here matters more than it does now.
-- EEOC-style questions rendered as a **radio button group** (rather than a
-  dropdown) aren't answered yet - reliably identifying which specific radio
-  corresponds to "decline to answer" (vs. its sibling options) needs
-  matching against each radio's own associated label text, which isn't
-  built. Still left for manual review, same as before.
-- City/location autocompletes are disambiguated with "City, State" when
-  both are known (there are multiple US cities named Decatur, Springfield,
-  etc., and a bare city name can silently match the wrong one) - but this
-  only helps when `user_profile.txt` has a state on file.
+- **EEOC-style demographic questions (gender, race, veteran status)
+  rendered as a radio button group are now auto-declined, not just left
+  blank.** This used to be a real gap: reliably identifying which specific
+  radio corresponds to "decline to answer" (vs. its sibling options) needed
+  matching against each radio's own associated label text, which wasn't
+  built. Confirmed live on Ashby that this is actually straightforward:
+  every EEOC radio group shares one native `name` attribute across its
+  options (the real HTML grouping mechanism), and the group's shared
+  question text ("Gender") lives in a `<label>` that's a *direct child* of
+  the group's `<fieldset>` - a different, more reliable signal than each
+  individual option's own label ("Male"), which is all `discoverFields()`
+  saw before. `fillApplication()` now groups radios by that shared `name`
+  before its main field loop runs, tests the group's *question* (not any
+  one option) against the same `SENSITIVE_RE` used for combobox/select
+  EEOC fields, and - only for a group that matches - finds and clicks
+  whichever option's own label matches the same decline-phrasing regex
+  already used elsewhere (`DECLINE_RE`: "decline", "prefer not", "I don't
+  wish/want to answer", etc.). This never guesses at an actual demographic
+  answer, the same as the combobox/select version of this feature always
+  has - it only ever selects a real "decline" option, or leaves the whole
+  group alone if one genuinely isn't found. Confirmed live: Gender, Race,
+  and Veteran Status all now correctly show their own "decline"/"prefer
+  not to self-identify" option selected.
+- **Routine Yes/No screening questions (work authorization, visa
+  sponsorship) are answered, not skipped**, even when they visually look
+  like the same kind of radio/checkbox control the EEOC bullet above still
+  leaves alone. Confirmed live on Ashby (Angle Health's application form)
+  that these don't actually use a real `<input type="radio">` pair at all -
+  it's a single hidden `<input type="checkbox" tabindex="-1">` present only
+  for the site's own internal form state, with the real clickable UI being
+  two plain `<button>` elements ("Yes"/"No") sitting alongside it as
+  siblings. Without recognizing this shape, both questions fell into the
+  same generic "always skip checkbox/radio" bucket as genuinely sensitive
+  EEOC fields, even though they're routine and answerable from
+  `work_auth_context.txt`. Fixed by harvesting the sibling buttons' text
+  into the field's options during discovery, routing any such field
+  through the normal Claude-answering pipeline (still gated by the same
+  sensitive-field check first, so a question that happened to match EEOC
+  wording would still be left alone even in this shape), and clicking the
+  matching button instead of trying to check/fill the hidden input
+  directly. Confirmed live: work authorization correctly answers "Yes" and
+  sponsorship correctly answers "No", while Gender/Race/Veteran Status on
+  that same form are independently handled by the EEOC auto-decline logic
+  above rather than this path (the two features are mutually exclusive by
+  construction: EEOC radios have no sibling `<button>`s to harvest into
+  `options`, and non-EEOC choice-button questions never match
+  `SENSITIVE_RE`).
+- **City/location autocompletes are disambiguated with "City, State"**
+  when both are known (there are multiple US cities named Decatur,
+  Springfield, etc., and a bare city name can silently match the wrong
+  one) - but this only helps when `user_profile.txt` has a state on file,
+  and only for a field whose label actually contains "city" or "current
+  location" (an alias added after a live Ashby field labeled exactly
+  "Current Location" was found not to match the original "city"-only
+  check and fell through to an unrelated Claude guess instead - see the
+  label-masking bullet below for why that guess wasn't even a well-
+  grounded one).
+- **A non-empty but useless placeholder can mask a real label sitting
+  right next to it, the same way "Select"/"Search" did.** Confirmed live
+  on Ashby: "Current Location"'s `<label for="X">` points at an `X` its
+  real `<input>` doesn't actually have as its `id` - the label and input
+  are just siblings in the same wrapper, never actually connected via
+  `for`/`id` at all (the same broken-association pattern also seen on the
+  work-authorization field above). Every signal ahead of placeholder in
+  the label cascade came up empty, so it settled for the input's own
+  `placeholder="Start typing..."` - a non-empty string, so the
+  DOM-proximity fallback never got a chance to run and find the real
+  "Current Location" text one level up. Unlike the earlier "Select"/
+  "Search" fix, this wasn't caught by wrong-but-plausible-looking output -
+  it was caught by checking the *report itself*, where the field's own
+  displayed label read "Start typing..." instead of a real question,
+  which was the tell. Fixed by extending the same generic-instruction-word
+  check to also cover "Start typing"/"Type here", resetting them to empty
+  so the proximity fallback runs, the same as it already did for "Select"/
+  "Search"/"Choose".
+- **A CSS-only required asterisk is invisible to both the real
+  `required`/`aria-required` attribute check and the textContent-based
+  asterisk fallback.** Confirmed live: "Current Location*"'s visible red
+  asterisk is painted entirely via `label::after { content: "*" }` - not
+  part of the label's actual text at all - so the field was being reported
+  as optional even though the form genuinely blocks submission without it.
+  `getComputedStyle(labelEl, "::before"/"::after").content` is a
+  standards-based, portable check (not tied to any one site's class
+  names) added as a third signal, checked against both places a real
+  associated `<label>` element is ever found (`label[for]`, or a wrapping
+  `<label>`) independent of which cascade step actually supplied the
+  field's label text.
 - **Company-embedded application forms are supported, including
   cross-origin iframes** (e.g. Samsara embeds Greenhouse's form via
   `job-boards.greenhouse.io/embed/job_app` inside an iframe on

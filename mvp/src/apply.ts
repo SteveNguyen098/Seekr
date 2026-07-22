@@ -49,6 +49,15 @@ export interface DiscoveredField {
    * option harvesting, not here.
    */
   multiSelect: boolean;
+  /** The raw `name` attribute - only meaningful for type === "radio",
+   * where it's the real native grouping mechanism (every option in one
+   * logical question shares the same name). Used to group
+   * individually-discovered radio options back into one question. */
+  groupName: string;
+  /** The *shared* question text for this radio's group (e.g. "Gender"),
+   * as opposed to `label`, which for a radio is this one option's own
+   * text (e.g. "Male"). Only meaningful for type === "radio". */
+  groupQuestion: string;
 }
 
 export interface FillReport {
@@ -208,18 +217,33 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
         if (!label) label = el.getAttribute("placeholder") || "";
         // A generic instruction word ("Select", "Select...", "Search",
-        // "Choose") isn't a real label - it's UI chrome that happens to be
-        // set as the aria-label/placeholder, not the actual question.
-        // Confirmed live and load-bearing: two Rippling fields both had
-        // aria-label="Select" directly on the control (no aria-labelledby
-        // at all), so without this check the cascade above stopped right
-        // there, thinking it had found a real label - Claude then saw two
-        // *identical*, contentless "Select" fields with nothing to tell
-        // them apart ("do you live in an accepted state" vs. "do you need
-        // visa sponsorship") and answered one of them wrong. Treating this
-        // as empty lets the DOM-proximity fallback below run instead,
-        // which found the real question text for both.
-        if (/^(select|search|choose)\.{0,3}$/i.test(label.trim())) label = "";
+        // "Choose", "Start typing", "Type here") isn't a real label - it's
+        // UI chrome that happens to be set as the aria-label/placeholder,
+        // not the actual question. Confirmed live and load-bearing: two
+        // Rippling fields both had aria-label="Select" directly on the
+        // control (no aria-labelledby at all), so without this check the
+        // cascade above stopped right there, thinking it had found a real
+        // label - Claude then saw two *identical*, contentless "Select"
+        // fields with nothing to tell them apart ("do you live in an
+        // accepted state" vs. "do you need visa sponsorship") and answered
+        // one of them wrong. Treating this as empty lets the DOM-proximity
+        // fallback below run instead, which found the real question text
+        // for both. "Start typing"/"Type here" is the same failure mode
+        // confirmed live on Ashby: "Current Location"'s <label for="X">
+        // points at an `X` the real <input> doesn't actually have as its
+        // `id` (broken/non-standard native association - the label and
+        // input are just siblings in the same wrapper, not connected via
+        // `for`/`id` at all), so every signal ahead of placeholder came up
+        // empty and the cascade settled for "Start typing..." - a
+        // non-empty but useless string that (unlike a fully empty label)
+        // never even reached the proximity fallback that would have found
+        // the real "Current Location" text sitting right there as a
+        // sibling. Without this fix Claude had to guess the field's
+        // purpose from context alone, and picked the wrong city ("Atlanta"
+        // instead of the real "Decatur") despite a real, unambiguous
+        // profile-driven answer being available - it just never got
+        // routed to it.
+        if (/^(select|search|choose|start typing|type here)\.{0,3}$/i.test(label.trim())) label = "";
         if (!label) {
           // Last resort: some fields (confirmed live on Rippling's ATS -
           // both per-job "custom questions" like salary requirements, and
@@ -243,16 +267,59 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
 
-        // Primary signal: the real HTML/ARIA required attribute. Fallback:
-        // a visible asterisk in the label text, for forms that mark a
-        // field required only visually without the programmatic attribute
-        // to match (a real, if sloppy, pattern some ATS forms use).
+        // Primary signal: the real HTML/ARIA required attribute. Fallback 1:
+        // a visible asterisk in the label's actual textContent, for forms
+        // that mark a field required only visually without the
+        // programmatic attribute to match. Fallback 2: an asterisk that
+        // isn't in textContent at all, only ever painted via CSS
+        // (`label::after { content: "*" }`) - confirmed live on Ashby that
+        // "Current Location*" is marked required exactly this way (a real,
+        // genuinely-blocking-to-submit field), with nothing for the
+        // textContent-based fallback above to find, so it was being
+        // reported as optional. getComputedStyle's pseudo-element content
+        // is a standards-based, portable check - not tied to any one
+        // site's class names - against both places a real associated
+        // <label> element is ever found (label[for], or a wrapping
+        // <label>), independent of whichever cascade step above actually
+        // supplied the label text.
         const requiredAttr = el.hasAttribute("required") || el.getAttribute("aria-required") === "true";
-        const required = requiredAttr || /\*/.test(label);
-        const options =
+        let cssRequiredAsterisk = false;
+        const labelForCheck = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+        const wrappingLabelForCheck = el.closest("label");
+        for (const candidateLabelEl of [labelForCheck, wrappingLabelForCheck]) {
+          if (!candidateLabelEl) continue;
+          const before = getComputedStyle(candidateLabelEl, "::before").content;
+          const after = getComputedStyle(candidateLabelEl, "::after").content;
+          if (before.includes("*") || after.includes("*")) {
+            cssRequiredAsterisk = true;
+            break;
+          }
+        }
+        const required = requiredAttr || /\*/.test(label) || cssRequiredAsterisk;
+        let options: string[] =
           tag === "SELECT"
             ? Array.from((el as HTMLSelectElement).options).map((o) => o.textContent?.trim() || "")
             : [];
+        if ((type === "checkbox" || type === "radio") && options.length === 0) {
+          // Some ATS widgets (confirmed live on Ashby, for "Are you
+          // authorized to work..."/sponsorship-style questions) render a
+          // Yes/No question as two plain <button> elements carrying the
+          // real option text and the actual click surface, with a native
+          // checkbox/radio input alongside them (often tabindex="-1")
+          // present purely for the site's own internal form state - the
+          // buttons, not the input, are what a real user clicks. Without
+          // this, these questions were indistinguishable from an ordinary
+          // checkbox and fell into the same "always skip" bucket as
+          // genuinely sensitive EEOC fields, even though they're routine
+          // and answerable. Scoped to a *direct* child button (not any
+          // descendant) and a small option count, so this doesn't
+          // accidentally vacuum up unrelated buttons (e.g. a "learn more"
+          // link) sitting near an ordinary checkbox.
+          const siblingButtons = Array.from(el.parentElement?.querySelectorAll(":scope > button") || [])
+            .map((b) => b.textContent?.trim() || "")
+            .filter((t) => t.length > 0 && t.length <= 40);
+          if (siblingButtons.length >= 2 && siblingButtons.length <= 6) options = siblingButtons;
+        }
         const multiSelect = tag === "SELECT" && (el as HTMLSelectElement).multiple;
 
         // Build a resilient selector: prefer id. Otherwise, DO NOT use
@@ -289,7 +356,35 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // all and silently never fired).
         const idOrName = `${el.id} ${el.getAttribute("name") || ""} ${el.getAttribute("data-testid") || ""}`.trim();
 
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect };
+        const groupName = type === "radio" ? el.getAttribute("name") || "" : "";
+        let groupQuestion = "";
+        if (type === "radio") {
+          // The group's shared question ("Gender") lives in a <label>
+          // that's a *direct* child of the group's <fieldset> - confirmed
+          // live on Ashby, where every EEOC radio group (Gender, Race,
+          // Veteran Status) follows this exact shape, e.g. <fieldset>
+          // <label>Gender</label> <input type="radio">... </fieldset>.
+          // This is a real associated label, unlike each individual
+          // option's own label ("Male") captured above as `label`.
+          const fieldset = el.closest("fieldset");
+          const directLabel = fieldset?.querySelector(":scope > label");
+          groupQuestion = directLabel?.textContent?.trim() || "";
+          if (!groupQuestion) {
+            // Fall back to the same DOM-proximity approach used for
+            // ordinary unlabeled fields above, walking up from the
+            // fieldset (or this radio, if it isn't even inside one)
+            // rather than from the individual option - looking for the
+            // group's shared question, not this one option's own text.
+            let node: Element | null = fieldset || el;
+            for (let i = 0; i < 8 && node && !groupQuestion; i++) {
+              const text = node.previousElementSibling?.textContent?.trim() || "";
+              if (text.length > 2 && text.length < 300) groupQuestion = text;
+              node = node.parentElement;
+            }
+          }
+        }
+
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -358,6 +453,33 @@ async function findMatchingOption(ctx: FormContext, selector: string, candidates
     for (const opt of options) {
       const text = (await opt.textContent().catch(() => ""))?.trim() ?? "";
       if (text && optionTextMatches(text, candidate)) return { handle: opt, text };
+    }
+  }
+  return null;
+}
+
+/**
+ * Clicks whichever sibling <button> matches one of the given candidates -
+ * the counterpart to a checkbox/radio field whose `options` were populated
+ * from sibling button text in discoverFields() (confirmed live on Ashby's
+ * Yes/No-style questions, where the buttons - not the underlying hidden
+ * input - are the real click surface). Returns the clicked button's own
+ * text if a match was found and clicked, or null otherwise.
+ */
+async function clickChoiceButton(ctx: FormContext, inputSelector: string, candidates: (string | RegExp)[]): Promise<string | null> {
+  const input = await ctx.$(inputSelector);
+  if (!input) return null;
+  const parentHandle = await input.evaluateHandle((el) => el.parentElement);
+  const parent = parentHandle.asElement();
+  if (!parent) return null;
+  const buttons = await parent.$$("button");
+  for (const candidate of candidates) {
+    for (const btn of buttons) {
+      const text = (await btn.textContent().catch(() => ""))?.trim() ?? "";
+      if (text && optionTextMatches(text, candidate)) {
+        await btn.click();
+        return text;
+      }
     }
   }
   return null;
@@ -518,6 +640,10 @@ interface AnswerableField {
   selector: string;
   label: string;
   tag: string;
+  // Only meaningful for distinguishing a checkbox/radio-backed
+  // choice-buttons field (see clickChoiceButton) from a real <input> text
+  // field - both share tag === "INPUT", so tag alone can't tell them apart.
+  type: string;
   options: string[];
   isCombobox: boolean;
   required: boolean;
@@ -581,6 +707,14 @@ function buildContextBlocks(context: PersonalContext): string {
 // listed range" shape, which already has a confident answer without
 // needing research (see the salary guidance in the main prompt below).
 const SALARY_OPEN_ENDED_RE = /salary (requirement|expectation)|desired (salary|compensation|pay)|expected (salary|compensation|pay)|compensation expectation/i;
+// A candidate's own instruction: the job description itself is always the
+// first place to check for a salary figure before ever researching one -
+// some postings state a range in body text (not just a dedicated "do you
+// accept this range" form field), and that beats a live search every
+// time. Matches common ways a range/figure gets written: "$60,000",
+// "$60K", or a bare number range like "60,000-72,000" immediately
+// preceded by a dollar sign on either side.
+const JD_HAS_SALARY_RE = /\$\s?\d{2,3}(,\d{3})+|\$\s?\d{2,3}\s?[kK]\b|\$\s?\d{2,3}[,.]?\d{0,3}\s*(-|–|to)\s*\$?\s?\d{2,3}[,.]?\d{0,3}\s?[kK]?/;
 
 /**
  * A candidate's own instruction: for open-ended salary questions, look up
@@ -653,7 +787,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): if the job description lists a range, say you're fine with that listed range (high confidence). Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -813,7 +947,44 @@ export async function fillApplication(
   const profile = context.profile;
   const filledSelectors: FilledTextRecord[] = [];
 
+  // EEOC radio groups (Gender, Race, Veteran Status, etc.) are made up of
+  // several individually-discovered radio options sharing one native
+  // `name` - group them back into one logical question so a genuinely
+  // sensitive group's own "decline to answer" option can be selected
+  // automatically, the same trusted treatment a combobox/select-shaped
+  // version of the exact same question already gets below (see
+  // SENSITIVE_RE further down). This never guesses at an actual
+  // demographic answer - it only ever finds and clicks a real "decline"
+  // option (matched via the same DECLINE_RE used for EEOC selects/
+  // comboboxes and the SMS-consent opt-out), or leaves the whole group
+  // alone if one isn't found. Confirmed live on Ashby that every such
+  // group includes a real, matchable decline option ("Decline to
+  // self-identify", "I decline to self-identify for protected veteran
+  // status").
+  const handledSelectors = new Set<string>();
+  const radioGroups = new Map<string, DiscoveredField[]>();
   for (const field of fields) {
+    if (field.type !== "radio" || !field.groupName) continue;
+    if (!radioGroups.has(field.groupName)) radioGroups.set(field.groupName, []);
+    radioGroups.get(field.groupName)!.push(field);
+  }
+  for (const members of radioGroups.values()) {
+    const question = members[0].groupQuestion || members[0].label;
+    if (!SENSITIVE_RE.test(question.toLowerCase())) continue;
+    const required = members.some((m) => m.required);
+    const declineOption = members.find((m) => DECLINE_RE.test(m.label));
+    if (declineOption) {
+      const ok = await checkField(formCtx, declineOption.selector);
+      if (ok) filled.push({ label: question, value: declineOption.label });
+      else skipped.push({ label: question, reason: "voluntary demographic/EEO field - could not select decline option, left for you to complete", required });
+    } else {
+      skipped.push({ label: question, reason: "voluntary demographic/EEO field - no decline option found, left for you to complete", required });
+    }
+    for (const m of members) handledSelectors.add(m.selector);
+  }
+
+  for (const field of fields) {
+    if (handledSelectors.has(field.selector)) continue;
     const labelLower = field.label.toLowerCase();
 
     // Fills a known, deterministic (non-AI-generated) value regardless of
@@ -915,13 +1086,40 @@ export async function fillApplication(
       continue;
     }
 
+    if ((field.type === "checkbox" || field.type === "radio") && field.options.length >= 2 && field.label && !SENSITIVE_RE.test(labelLower)) {
+      // Routine Yes/No-style questions (work authorization, visa
+      // sponsorship, etc., confirmed live on Ashby) render via the
+      // sibling-button pattern harvested into field.options by
+      // discoverFields() - real, answerable questions that would
+      // otherwise fall into the generic "always skip" bucket right below,
+      // alongside genuinely sensitive EEOC fields. SENSITIVE_RE is checked
+      // here rather than left to the dedicated check further down in this
+      // function, because that check only runs for SELECT/combobox/text
+      // fields - checkboxes and radios never reach that far, they always
+      // continue out of this loop via one branch in this section or the
+      // next.
+      toAnswer.push({
+        selector: field.selector,
+        label: field.label,
+        tag: field.tag,
+        type: field.type,
+        options: field.options,
+        isCombobox: false,
+        required: field.required,
+        multiSelect: false,
+      });
+      continue;
+    }
+
     if (field.type === "checkbox" || field.type === "radio") {
       // Broader-scope consent/legal checkboxes are always left for the
-      // user. Some EEOC questions are rendered as a radio group rather
-      // than a dropdown - reliably identifying the specific "decline"
-      // radio (vs. its sibling options) needs matching against each
-      // radio's own associated label text, which isn't covered yet; still
-      // left for manual review here rather than guessed at.
+      // user, as are genuinely sensitive EEOC questions (gender, race,
+      // veteran/disability status) - those render as a real multi-option
+      // radio group (confirmed live on Ashby: grouped by a shared native
+      // `name`, with the question text as a direct-child <label> of the
+      // group's <fieldset>), and reliably identifying just the "decline"
+      // option among several sibling radios isn't covered; safer to leave
+      // for manual review than guess at a protected-category answer.
       skipped.push({ label: field.label || field.selector, reason: "checkbox/consent field left for user to decide", required: field.required });
       continue;
     }
@@ -1036,7 +1234,14 @@ export async function fillApplication(
       await setField(profile.address);
       continue;
     }
-    if (labelLower.includes("city") && profile.city) {
+    if ((labelLower.includes("city") || labelLower.includes("current location")) && profile.city) {
+      // "Current Location" (confirmed live on Ashby: a single combined
+      // city/state/country combobox, e.g. "Decatur, Georgia, United
+      // States") is the same kind of field as a bare "City" one, just a
+      // different label - without this alias it fell through to Claude's
+      // general answering instead of this deterministic, profile-sourced
+      // path, and Claude guessed a plausible-looking but wrong city
+      // ("Atlanta" rather than the real "Decatur") with no disambiguation.
       // Bare city names are frequently ambiguous (there are multiple US
       // "Decatur"s, "Springfield"s, etc.) - a search-driven autocomplete
       // will happily return a same-named city in the wrong state, which is
@@ -1095,18 +1300,27 @@ export async function fillApplication(
         options = harvested.options;
         multiSelect = harvested.multiSelect;
       }
-      toAnswer.push({ selector: field.selector, label: field.label, tag: field.tag, options, isCombobox: field.isCombobox, required: field.required, multiSelect });
+      toAnswer.push({ selector: field.selector, label: field.label, tag: field.tag, type: field.type, options, isCombobox: field.isCombobox, required: field.required, multiSelect });
     }
   }
 
   if (toAnswer.length > 0) {
     // A candidate's own instruction: open-ended salary questions should
-    // use real current market data, not just Claude's trained knowledge.
-    // Only worth the extra call when such a field actually exists - the
-    // separate yes/no "do you accept the listed range" shape already has
-    // a confident answer without needing research.
+    // use real current market data, not just Claude's trained knowledge -
+    // but only once the job description itself has been checked for a
+    // stated figure, which always wins over a search. Some postings state
+    // a range in their own body text (not just a dedicated "do you accept
+    // this range" field), and skipping the research call entirely when one's
+    // already there isn't just an optimization - it removes any chance of a
+    // separately-researched figure out-competing the JD's own number in
+    // Claude's answer, which is exactly the failure mode a live test hit
+    // (the JD stated $60,000-$72,000, but a live-researched $58,000-$85,000
+    // got used instead, backwards from what should always win).
     const hasOpenEndedSalaryQuestion = toAnswer.some((f) => SALARY_OPEN_ENDED_RE.test(f.label));
-    const salaryResearch = hasOpenEndedSalaryQuestion ? await researchSalaryRange(anthropic, jobTitle, jobDescription) : "";
+    const salaryResearch =
+      hasOpenEndedSalaryQuestion && !JD_HAS_SALARY_RE.test(jobDescription)
+        ? await researchSalaryRange(anthropic, jobTitle, jobDescription)
+        : "";
 
     const answers = await answerWithClaude(anthropic, resume, jobDescription, context, toAnswer, false, salaryResearch);
     const hasAnswer = (f: AnswerableField, a: ClaudeAnswer | undefined) =>
@@ -1178,6 +1392,17 @@ export async function fillApplication(
           if (ok) filled.push({ label: field.label, value: values.join(", "), generated: true, lowConfidence });
           else skipped.push({ label: field.label, reason: `could not select options [${values.join(", ")}]`, required });
         }
+        continue;
+      }
+
+      if (field.type === "checkbox" || field.type === "radio") {
+        // The choice-buttons pattern (see clickChoiceButton) - the real
+        // click surface is a sibling <button>, not the underlying
+        // input, so this can't go through fillTextVerified/selectOption
+        // like an ordinary field.
+        const picked = await clickChoiceButton(formCtx, field.selector, [value]);
+        if (picked) filled.push({ label: field.label, value: picked, generated: true, lowConfidence });
+        else skipped.push({ label: field.label, reason: `could not find a matching button for "${value}" for this question`, required });
         continue;
       }
 

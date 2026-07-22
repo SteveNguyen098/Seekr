@@ -27,10 +27,18 @@ function parseArgs(argv: string[]) {
 function usageAndExit(): never {
   console.error(`Usage:
   npx tsx src/index.ts --career-url <url> --resume <path.docx> [--criteria <path.json>] [--titles "title1,title2"] [--max-years N] [--out ./out]
+  npx tsx src/index.ts --job-url <url> --resume <path.docx> [--out ./out]
 
 A --criteria file supplies target titles and screening rules in one place
 (see criteria.json). Individual flags override whatever it sets.
-Either --criteria or --titles is required.
+Either --criteria or --titles is required when scraping a career page with
+--career-url.
+
+--job-url skips scraping/filtering/ranking entirely and applies directly to
+one already-known posting - for ATS platforms whose listing page isn't
+scrapable yet (confirmed on Ashby: the generic scraper returns 0 postings
+even though the site clearly has openings), or when you already know
+exactly which job you want.
 
 Example:
   npx tsx src/index.ts \\
@@ -52,7 +60,8 @@ interface CriteriaFile {
 }
 
 const args = parseArgs(process.argv.slice(2));
-if (!args["career-url"] || !args["resume"] || (!args["criteria"] && !args["titles"])) usageAndExit();
+const jobUrl = args["job-url"];
+if (!args["resume"] || (!jobUrl && (!args["career-url"] || (!args["criteria"] && !args["titles"])))) usageAndExit();
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ANTHROPIC_API_KEY is not set. Add it to a .env file (see .env.example).");
   process.exit(1);
@@ -71,7 +80,7 @@ if (args["criteria"]) {
 const targetTitles = args["titles"]
   ? args["titles"].split(",").map((t) => t.trim()).filter(Boolean)
   : (fileCriteria.titles ?? []);
-if (targetTitles.length === 0) usageAndExit();
+if (!jobUrl && targetTitles.length === 0) usageAndExit();
 
 const criteria: Criteria = {
   targetTitles,
@@ -109,65 +118,79 @@ const browser = await chromium.launch({ headless: !headed });
 const page = await browser.newPage();
 
 try {
-  console.log(`\nScraping career page: ${careerUrl}`);
-  const allJobs = await listJobs(page, careerUrl);
-  console.log(`  -> found ${allJobs.length} postings`);
+  let best: { job: CandidateJob; score: number; reasoning: string };
 
-  const titleMatches = filterByTitle(allJobs, criteria);
-  console.log(`  -> ${titleMatches.length} match target titles [${targetTitles.join(", ")}]`);
-  if (titleMatches.length === 0) {
-    console.log("No postings matched the target titles. Try broader keywords.");
-    await browser.close();
-    process.exit(0);
-  }
+  if (jobUrl) {
+    // Skips scraping/filtering/ranking entirely - for platforms whose
+    // listing page isn't scrapable yet (confirmed on Ashby), or when the
+    // job is already known. score/reasoning are synthetic (no ranking
+    // happened) purely so this shares the same `best.job.*` shape the
+    // rest of the pipeline below already expects.
+    console.log(`\nFetching job posting: ${jobUrl}`);
+    const { title, text } = await getJobDescription(page, jobUrl);
+    console.log(`  -> ${title}`);
+    best = { job: { title, url: jobUrl, location: "", descriptionText: text }, score: 100, reasoning: "direct --job-url, no ranking performed" };
+  } else {
+    console.log(`\nScraping career page: ${careerUrl}`);
+    const allJobs = await listJobs(page, careerUrl!);
+    console.log(`  -> found ${allJobs.length} postings`);
 
-  const locationMatches = filterByLocation(titleMatches, criteria);
-  if (criteria.acceptableLocations?.length) {
-    console.log(
-      `  -> ${locationMatches.length} pass the location filter [${criteria.acceptableLocations.join(", ")}] (${titleMatches.length - locationMatches.length} dropped for being tied to a specific non-matching place)`
-    );
-  }
-  if (locationMatches.length === 0) {
-    console.log("No postings survived the location filter.");
-    await browser.close();
-    process.exit(0);
-  }
-
-  const candidates: CandidateJob[] = [];
-  for (const job of locationMatches.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
-    const { text } = await getJobDescription(page, job.url);
-    const hardCheck = passesHardRequirements(text, criteria);
-    if (!hardCheck.pass) {
-      console.log(`  skip "${job.title}": ${hardCheck.reason}`);
-      continue;
+    const titleMatches = filterByTitle(allJobs, criteria);
+    console.log(`  -> ${titleMatches.length} match target titles [${targetTitles.join(", ")}]`);
+    if (titleMatches.length === 0) {
+      console.log("No postings matched the target titles. Try broader keywords.");
+      await browser.close();
+      process.exit(0);
     }
-    candidates.push({ title: job.title, url: job.url, location: job.location, descriptionText: text });
+
+    const locationMatches = filterByLocation(titleMatches, criteria);
+    if (criteria.acceptableLocations?.length) {
+      console.log(
+        `  -> ${locationMatches.length} pass the location filter [${criteria.acceptableLocations.join(", ")}] (${titleMatches.length - locationMatches.length} dropped for being tied to a specific non-matching place)`
+      );
+    }
+    if (locationMatches.length === 0) {
+      console.log("No postings survived the location filter.");
+      await browser.close();
+      process.exit(0);
+    }
+
+    const candidates: CandidateJob[] = [];
+    for (const job of locationMatches.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
+      const { text } = await getJobDescription(page, job.url);
+      const hardCheck = passesHardRequirements(text, criteria);
+      if (!hardCheck.pass) {
+        console.log(`  skip "${job.title}": ${hardCheck.reason}`);
+        continue;
+      }
+      candidates.push({ title: job.title, url: job.url, location: job.location, descriptionText: text });
+    }
+
+    if (candidates.length === 0) {
+      console.log("No postings survived the hard-requirements filter.");
+      await browser.close();
+      process.exit(0);
+    }
+
+    console.log(`\nAsking Claude to rank ${candidates.length} candidate posting(s) against the resume...`);
+    const ranked = await rankJobs(anthropic, resume.text, candidates);
+    for (const r of ranked) {
+      console.log(`  [${r.score.toFixed(0)}] ${r.job.title} (${r.job.location}) - ${r.reasoning}`);
+    }
+
+    best = ranked[0];
+
+    if (best.score < minMatchScore) {
+      console.log(
+        `\nBest candidate "${best.job.title}" scored ${best.score.toFixed(0)}, below the minimum match score of ${minMatchScore}.`
+      );
+      console.log(`No posting was a strong enough fit to fill out. Try different titles, or lower --min-score.`);
+      await browser.close();
+      process.exit(0);
+    }
+
+    console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);
   }
-
-  if (candidates.length === 0) {
-    console.log("No postings survived the hard-requirements filter.");
-    await browser.close();
-    process.exit(0);
-  }
-
-  console.log(`\nAsking Claude to rank ${candidates.length} candidate posting(s) against the resume...`);
-  const ranked = await rankJobs(anthropic, resume.text, candidates);
-  for (const r of ranked) {
-    console.log(`  [${r.score.toFixed(0)}] ${r.job.title} (${r.job.location}) - ${r.reasoning}`);
-  }
-
-  const best = ranked[0];
-
-  if (best.score < minMatchScore) {
-    console.log(
-      `\nBest candidate "${best.job.title}" scored ${best.score.toFixed(0)}, below the minimum match score of ${minMatchScore}.`
-    );
-    console.log(`No posting was a strong enough fit to fill out. Try different titles, or lower --min-score.`);
-    await browser.close();
-    process.exit(0);
-  }
-
-  console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);
 
   let resumeToUpload = resumePath;
   if (resumePath.toLowerCase().endsWith(".docx")) {

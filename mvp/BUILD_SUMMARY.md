@@ -175,7 +175,9 @@ missed field: a fabricated demographic answer, not just an empty one.
 Confirmed fixed — the same live form now correctly declines all five
 demographic questions); whether it's *required* (the real
 `required`/`aria-required` attribute first, falling back to a visible
-asterisk in the label only when that's absent); whether it's a *combobox*
+asterisk in the label's own text, and finally to a CSS-only asterisk that
+isn't in the text at all — see the Ashby-specific bug below for why that
+third signal exists); whether it's a *combobox*
 (detected via `role="combobox"` or similar ARIA attributes — these need
 fundamentally different handling than a plain HTML `<select>`, see below);
 and whether it's *multi-select* (a native `<select multiple>` — combobox
@@ -221,6 +223,50 @@ thing to verify. Fixed by treating `"Select"`/`"Search"`/`"Choose"`
 DOM-proximity fallback gets a chance to find the real question text
 instead of a generic placeholder word. Confirmed fixed: both fields now
 resolve their real question and answer correctly.
+
+**The same false-signal problem, found again on a fourth platform (Ashby)
+via a different generic word.** A field labeled "Current Location" on
+Angle Health's application form was reported in the fill summary as
+literally "Start typing..." instead of its real question - the tell that
+gave this one away, rather than a wrong-but-plausible answer like the
+"Select" case above. Root cause: Ashby's `<label for="X">Current
+Location</label>` points at an `X` the real `<input>` doesn't actually
+have as its `id` at all (`el.id` is empty; label and input are just
+siblings in the same wrapper div, never genuinely connected via
+`for`/`id` - the same broken native-association pattern also seen on the
+work-authorization/sponsorship fields). Every signal ahead of placeholder
+in the cascade came up empty, so it settled for the input's own
+`placeholder="Start typing..."` - non-empty, so the DOM-proximity
+fallback never got a chance to run and find "Current Location" sitting
+one level up as the input-container's previous sibling. Fixed by
+extending the same generic-instruction-word check to also cover "Start
+typing"/"Type here", not just "Select"/"Search"/"Choose". Downstream,
+this also meant the field never reached the profile-driven city/state
+disambiguation logic in bucket 9 below at all (its label match only
+looked for "city") - it fell through to Claude's general answering
+instead, which picked a plausible-sounding but wrong city ("Atlanta")
+with no real disambiguation signal to ground it in the candidate's actual
+location ("Decatur"). Both the label-masking bug and the missing "current
+location" alias needed fixing together; confirmed live the field now
+correctly resolves and fills "Decatur, Georgia, United States".
+
+**A required asterisk that's painted entirely by CSS is invisible to
+both required-detection signals above it.** Also confirmed on that same
+"Current Location*" field: even after the label-masking fix, `required`
+was still coming back `false` despite a clearly visible red asterisk in
+the live screenshot. Its `<label>` element has an empty `textContent` -
+no literal `*` character anywhere in it - because the asterisk is
+rendered purely via `label::after { content: "*" }` in Ashby's CSS, a
+common styling pattern that's completely invisible to both the native
+`required`/`aria-required` attribute check and the textContent-based
+`/\*/`-in-the-label fallback (confirmed by comparing `getComputedStyle`
+output between this field and an optional one: `"*"` vs. `"none"` for the
+`::after` pseudo-element's `content` property). Fixed by adding
+`getComputedStyle(labelEl, "::before"/"::after").content` as a third
+required-detection signal, checked against both places a real associated
+`<label>` element is ever found (`label[for]`, or a wrapping `<label>`) -
+a standards-based, portable check rather than anything tied to Ashby's
+own (hashed, unstable-across-builds) class names.
 
 **Live salary research.** A candidate's own instruction: open-ended
 "what are your salary requirements?" questions should use real current
@@ -347,20 +393,85 @@ pick like a single-select does.
    in `discoverFields()`) — an end-anchored regex that only allowed
    trailing whitespace missed the real field entirely on the first attempt
    at this fix.
-3. **Everything else checkbox/radio-shaped** — always left for you.
-   Reliably identifying which specific *radio* in a group corresponds to
-   "decline to answer" (as opposed to its sibling options) isn't built
-   yet, so EEOC questions rendered as radio groups (rather than a
-   dropdown) still fall into this bucket.
-4. **Voluntary EEOC/demographic fields** (gender, race, veteran/disability
-   status) — always get an active "decline to answer" style selection
-   when the form offers one (native select or combobox), matched via a
-   regex covering the several real-world phrasings these take ("decline",
-   "prefer not", "I don't wish to answer", "I don't want to answer" — the
-   OFCCP-standard veteran and disability forms use different verbs for
-   the same intent). Never guessed at beyond that, never left at a blank
-   default if a decline option exists, never written to any file.
-5. **Fixed, deterministic answers** for a few specific question types,
+3. **"Yes/No" choice-button questions** (work authorization, visa
+   sponsorship) — answered via Claude, not skipped. Confirmed live on
+   Ashby (Angle Health's application form) that these don't use a real
+   `<input type="radio">` pair at all: it's a single hidden `<input
+   type="checkbox" tabindex="-1">`, present only for the site's own
+   internal form state, with two plain `<button>` elements ("Yes"/"No")
+   as its siblings carrying the actual question text's answer options and
+   the real click surface. Before this was recognized, both questions
+   were indistinguishable from an ordinary checkbox and fell straight
+   into bucket 4 below — the same "always skip" treatment as genuinely
+   sensitive EEOC fields, even though they're routine and answerable from
+   `work_auth_context.txt`. `discoverFields()` now harvests sibling
+   `button` text (direct children of the input's parent only, 2-6 of
+   them, each ≤ 40 characters — tight enough to avoid accidentally
+   sweeping in an unrelated button like "learn more") into the field's
+   `options` whenever a checkbox/radio has none of its own; the main field
+   loop then routes any checkbox/radio *with* options through the normal
+   Claude-answering pipeline instead of the always-skip bucket — but only
+   after the same `SENSITIVE_RE` check bucket 4 uses, so a question that
+   happened to render this way but matched EEOC wording would still be
+   left alone. On dispatch, `clickChoiceButton()` finds the matching
+   sibling `<button>` by text (reusing the same bidirectional
+   string-containment matching as combobox options) and clicks it — not
+   the hidden input directly, which isn't the real interactive element.
+   Confirmed live: work authorization correctly answers "Yes" and
+   sponsorship correctly answers "No", while Gender/Race/Veteran Status on
+   that same form (real grouped radios, not this button-pair shape) remain
+   untouched in bucket 4.
+4. **Voluntary EEOC/demographic fields rendered as a radio group**
+   (gender, race, veteran/disability status) — grouped back into one
+   logical question and auto-declined, the same as bucket 5 below does
+   for a select/combobox-shaped version of the exact same question. This
+   used to be a real gap: reliably identifying which specific *radio* in
+   a group corresponds to "decline to answer" (as opposed to its sibling
+   options) wasn't built. Confirmed live on Ashby that it's actually
+   straightforward once you look at the real structure: every EEOC radio
+   group is multiple real `<input type="radio">` elements sharing one
+   native `name` attribute (the real HTML grouping mechanism), with the
+   *group's* shared question text living in a `<label>` that's a direct
+   child of the group's `<fieldset>` (e.g. `<fieldset> <label>Gender
+   </label> <input type="radio">... </fieldset>`) — a different, more
+   reliable signal than any individual option's own label ("Male"), which
+   is all field-by-field discovery ever saw before. Before
+   `fillApplication()`'s main per-field loop runs, a grouping pass now
+   collects radios by shared `name` into `DiscoveredField.groupName`
+   (each carrying the group's resolved `groupQuestion` too — same
+   `fieldset > label` lookup first, then the same 8-level DOM-proximity
+   walk used elsewhere as a fallback), tests `groupQuestion` — not any
+   one option — against `SENSITIVE_RE`, and for a matching group finds
+   whichever option's own label matches `DECLINE_RE` and clicks it via
+   `checkField()` (a plain `.check()` sufficed live on Ashby - no
+   hidden-input fallback needed here, unlike Rippling). Matched members
+   are marked handled so the main loop's generic checkbox/radio bucket
+   (still very much in place for anything real that this doesn't cover)
+   never sees them individually. Never guesses at an actual demographic
+   answer — only ever selects a real "decline" option, or leaves the
+   whole group alone if one isn't found. Confirmed live: Gender, Race,
+   and Veteran Status all now correctly show their own
+   "decline"/"prefer not to self-identify" option selected, while the
+   two choice-button questions on the very same form (bucket 3) are
+   untouched by this path — the two features are mutually exclusive by
+   construction (EEOC radios have no sibling `<button>`s for bucket 3 to
+   harvest `options` from, and non-EEOC choice-button questions never
+   match `SENSITIVE_RE` for this bucket to act on).
+5. **Voluntary EEOC/demographic fields rendered as a select or combobox**
+   (gender, race, veteran/disability status) — always get an active
+   "decline to answer" style selection when the form offers one, matched
+   via a regex covering the several real-world phrasings these take
+   ("decline", "prefer not", "I don't wish to answer", "I don't want to
+   answer" — the OFCCP-standard veteran and disability forms use
+   different verbs for the same intent). The same regex now also
+   resolves which specific *radio option* is the decline one for bucket 4
+   above. Never guessed at beyond that, never left at a blank default if
+   a decline option exists, never written to any file.
+6. **Everything else checkbox/radio-shaped** — always left for you. This
+   is now a narrower catch-all than it used to be (buckets 3 and 4 above
+   peeled off the two confirmed-live shapes that actually need answering),
+   covering only checkbox/radio fields that don't match either.
+7. **Fixed, deterministic answers** for a few specific question types,
    routed through `answerDirectly()` rather than an LLM call so there's no
    risk of a fabricated answer: "AI policy for interviewers" → "No"; "how
    did you hear about **this opportunity/role**" → "LinkedIn"; the more
@@ -384,9 +495,9 @@ pick like a single-select does.
    messages/SMS *and* matches the same decline-phrasing regex
    (`DECLINE_RE`) used for EEOC fields, then calls `checkField()` (see
    above) on it.
-6. **No discoverable label at all** — left alone. Can't safely answer
+8. **No discoverable label at all** — left alone. Can't safely answer
    something with zero information about what's being asked.
-7. **Known identity and contact fields** (first/last name, email, phone,
+9. **Known identity and contact fields** (first/last name, email, phone,
    LinkedIn, address, city, state, zip, country, phone country code) —
    filled directly from the resume or `user_profile.txt`, no AI call
    needed. City fields get extra care: a bare city name is often
@@ -394,10 +505,18 @@ pick like a single-select does.
    etc.), so when both city and state are known, the search tries
    `"City, State"` first and only falls back to the bare name if that
    doesn't match — a bare-name match that happened to land on the wrong
-   state was a real, confirmed bug in early testing.
-8. **Everything remaining** — custom written questions, salary,
-   relocation, work authorization/sponsorship, education, years of
-   experience with a specific tool, etc. — goes to Claude in a single
+   state was a real, confirmed bug in early testing. "Current Location" is
+   now treated as an alias for "city" too - a real Ashby field with that
+   exact label fell through to Claude's general answering instead of this
+   deterministic path, and without the disambiguation logic here, Claude
+   guessed "Atlanta" rather than the profile's actual "Decatur" (see the
+   label-masking bug in the `discoverFields()` section above for the
+   deeper reason this field's *own* label wasn't recognized at all).
+10. **Everything remaining** — custom written questions, salary,
+   relocation, work authorization/sponsorship when rendered as a
+   select/combobox rather than the choice-button shape bucket 3 now
+   covers, education, years of experience with a specific tool, etc. —
+   goes to Claude in a single
    batched request (`answerWithClaude()`), grounded in your resume, the
    job description, and all three personal-context files. Guidance baked
    into the prompt: salary questions are answered differently depending
@@ -635,6 +754,7 @@ boards using your actual resume:
 | Samsara | Greenhouse (iframe-embedded on their own domain) | The hardest form by far — iframe detection, combobox scoping/harvesting, multi-select, and the retry mechanism were all proven or fixed here |
 | Iterable | Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
 | PatientNow | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
+| Angle Health | Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
 
 Confirmed working across these runs:
 - Scraping a real career page and finding every open posting.
