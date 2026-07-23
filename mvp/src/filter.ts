@@ -136,3 +136,41 @@ export function passesHardRequirements(
   ];
   return checks.find((c) => !c.pass) ?? { pass: true };
 }
+
+// The candidate's home timezone is US Eastern (Atlanta, GA - from their
+// profile). These are the NON-Eastern US timezone / region signals worth
+// flagging when a posting states a preference for one. Eastern / ET / EST /
+// EDT / East Coast are deliberately NOT here: those match the candidate's
+// own zone, so they should never trigger the flag.
+const NON_EASTERN_TZ_RE =
+  /\b(?:pacific|mountain|central)\s+(?:standard\s+|daylight\s+)?time(?:\s+zone)?\b|\b(?:PST|PDT|MST|MDT|CST|CDT)\b|\bwest coast\b/gi;
+
+/**
+ * Best-effort, ADVISORY-ONLY scan for a stated regional/timezone preference
+ * that doesn't match the candidate's US-Eastern (Atlanta) location - e.g.
+ * "prioritizing candidates in the Central Standard time zone." Returns a
+ * soft-fit flag with the matched phrase(s) plus a short context snippet, so
+ * the candidate can read the exact wording (including any "... or Eastern"
+ * escape hatch that would make it a non-issue) and decide for themselves.
+ *
+ * Deliberately NOT part of passesHardRequirements: this never rejects a
+ * role, it only surfaces something to look at before a resume is generated.
+ * Like the other heuristics here it's keyword-based and can miss unusual
+ * phrasings; it can also over-surface an incidental office-location mention,
+ * which is why it quotes context rather than deciding anything.
+ */
+export function detectLocationPreference(
+  descriptionText: string
+): { flagged: boolean; matched: string[]; snippet: string } {
+  const matches = [...descriptionText.matchAll(NON_EASTERN_TZ_RE)];
+  if (matches.length === 0) return { flagged: false, matched: [], snippet: "" };
+  const matched = [...new Set(matches.map((m) => m[0].trim()))];
+  // A short context window around the first hit, so the exact phrasing is
+  // visible (position, not just the bare token).
+  const first = matches[0];
+  const idx = first.index ?? 0;
+  const start = Math.max(0, idx - 90);
+  const end = Math.min(descriptionText.length, idx + first[0].length + 90);
+  const snippet = descriptionText.slice(start, end).replace(/\s+/g, " ").trim();
+  return { flagged: true, matched, snippet };
+}

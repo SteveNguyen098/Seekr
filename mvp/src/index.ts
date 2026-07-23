@@ -6,7 +6,7 @@ import path from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
 import { loadResume } from "./resume.js";
 import { listJobs, getJobDescription } from "./scrape.js";
-import { filterByTitle, filterByLocation, passesHardRequirements, type Criteria } from "./filter.js";
+import { filterByTitle, filterByLocation, passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
 import { rankJobs, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
@@ -190,6 +190,16 @@ try {
     }
 
     console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);
+  }
+
+  // Advisory soft-flag (never a skip): surface a stated non-Eastern
+  // timezone/region preference before any resume is generated, so it can be
+  // reviewed and the run aborted manually if it's a dealbreaker.
+  const locPref = detectLocationPreference(best.job.descriptionText);
+  if (locPref.flagged) {
+    console.log(`\n! LOCATION/TIMEZONE SOFT-FLAG: this posting mentions ${locPref.matched.join(", ")}, which doesn't match your Atlanta / US-Eastern location.`);
+    console.log(`  Context: "...${locPref.snippet}..."`);
+    console.log(`  This is a soft-fit concern, NOT a hard requirement - review it before proceeding; the run continues either way.`);
   }
 
   let resumeToUpload = resumePath;

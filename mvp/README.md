@@ -8,7 +8,14 @@ resume, find one matching job and fill out its application form.
 1. Scrapes a career page (Playwright) for job postings.
 2. Filters postings by keyword match against target titles, and by hard
    requirements (years of experience, salary floor, employment type,
-   location) found in the full job description - see `criteria.json`.
+   location) found in the full job description - see `criteria.json`. A
+   stated regional/timezone preference that doesn't match the candidate's
+   own location (e.g. "prioritizing candidates in the Central Standard
+   time zone") is deliberately **not** a hard-requirement skip - it's a
+   soft-fit signal, printed as a flag (with the exact matched phrase and
+   surrounding context) right before the resume is generated, so there's
+   a chance to review and abort manually if it matters. See
+   `detectLocationPreference()` in `src/filter.ts`.
 3. Sends the surviving candidates to the Claude API to rank them against the
    resume and pick the single best match. Below a configurable minimum
    score, it refuses to fill anything rather than force a weak match.
@@ -137,6 +144,34 @@ end-to-end while still stopping before submit like everything else.
   added - leaving it byte-for-byte identical across every job is a bug, not
   a safe default, and was caught and fixed during testing (see Known
   limitations).
+- **Terminology stays consistent across runs, deterministically.** The
+  LLM doesn't always phrase the same underlying fact the same way twice -
+  a real run once wrote "CRM Platforms" in Technical Skills while Core
+  Competencies (and every other run) used "CRM Platform Experience,"
+  making otherwise-identical resumes look inconsistent side by side.
+  Rather than relying on the prompt alone to hold the line, every skills-
+  section replacement now passes through a deterministic normalization
+  pass (`normalizeCrmTerminology()`) that collapses any CRM-related
+  phrasing to the one canonical wording, regardless of what the LLM
+  emitted. Scoped to the two skills sections only - forcing that exact
+  noun phrase into the prose Professional Summary would read awkwardly
+  there.
+- **Surfaces the most specific genuinely-true match, not generic
+  framing.** When a job description specifically emphasizes systems
+  administration, IT infrastructure, or hands-on technical systems
+  management, and the candidate's resume actually contains that kind of
+  experience (a System Administrator role - device/endpoint management,
+  Intune, Google Admin, network infrastructure), the Professional Summary
+  now explicitly names it instead of defaulting to vaguer "systems-minded"
+  language. This is still bound by the same no-fabrication rule above -
+  it only surfaces something that's genuinely already in the resume, for
+  the job descriptions where it's genuinely the most relevant thing to
+  lead with. Confirmed live: a job description emphasizing HR-systems
+  administration produced a Summary opening with "hands-on experience
+  administering technical systems (including device/endpoint management
+  via Intune and Google Admin)" - naming the real, specific experience
+  rather than the generic phrasing a less specific version of this prompt
+  had been producing.
 - **A reference to independent/personal project work is deliberately
   sticky**: if the source content mentions it, the tailored version keeps
   a reference to it too, regardless of how closely the job description's

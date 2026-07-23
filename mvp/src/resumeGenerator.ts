@@ -237,6 +237,40 @@ function looksLikeList(content: string): boolean {
 // changes.
 const INDEPENDENT_PROJECT_RE = /independent (product|project)|personal project|side project|self-directed/i;
 
+// The candidate's canonical wording for their CRM background is "CRM
+// Platform Experience" (as it appears in Core Competencies). A tailored run
+// once emitted "CRM Platforms" in Technical Skills instead - a run-to-run
+// terminology drift that makes otherwise-identical resumes look
+// inconsistent side by side. Normalize every CRM reference in the skills
+// sections to the one canonical phrase deterministically, so the LLM's
+// phrasing choice can't reintroduce the drift regardless of what it emits.
+// The trailing qualifier group is optional and greedy, so bare "CRM", "CRM
+// Platforms", "CRM Software/Tools/Systems", and the already-canonical "CRM
+// Platform Experience" all collapse to the same string (re-normalizing the
+// canonical form is a no-op, no doubling). Plural forms are listed BEFORE
+// their singular prefix (Platforms before Platform, Tools before Tool,
+// Systems before System, Applications before Application) - regex
+// alternation takes the first alternative that matches at a position, not
+// the longest, so with the plural listed second "CRM Platforms" matched
+// only "CRM Platform", leaving the trailing "s" outside the replaced span
+// and producing "CRM Platform Experiences" (confirmed by a live test run -
+// a real bug caught before it shipped, not hypothetical).
+const CANONICAL_CRM = "CRM Platform Experience";
+export function normalizeCrmTerminology(text: string): string {
+  return text.replace(
+    /\bCRM\b(?:[\s-]+(?:Platforms|Platform|Software|Tools|Tool|Systems|System|Applications|Application|Experience))*/gi,
+    CANONICAL_CRM
+  );
+}
+
+// True for the CORE SKILLS placeholders (Technical Skills / Core
+// Competencies lists) - the only sections CRM-terminology normalization is
+// scoped to, since forcing the exact noun phrase "CRM Platform Experience"
+// into the prose Professional Summary would read awkwardly.
+function isSkillsSection(p: Placeholder): boolean {
+  return /core skills|technical skills|core competenc/i.test(`${p.sectionHeader} ${p.paragraphText}`);
+}
+
 async function generateReplacements(
   anthropic: Anthropic,
   placeholders: Placeholder[],
@@ -278,6 +312,10 @@ The goal is rigorous, PRECISE alignment with the job description - not maximum k
 
 STRICT no-fabrication rule: only use skills, tools, technologies, and claims that already appear - verbatim or near-verbatim - somewhere in the candidate's full resume, their own screening-question answers, or the section's current content (all provided below). Do NOT upgrade a generic category into a specific named product just because the job description asks for that product unless that specific product is actually confirmed in the resume or screening answers: e.g. if nothing below ever names a specific CRM, do not write "Salesforce" even though the job wants Salesforce - keep the generic category the candidate's background actually supports. If something IS specifically confirmed below (even if it's not in the section's current wording), you should surface it when relevant - this rule is about not inventing things, not about being needlessly generic when specifics are genuinely available. If you are not sure whether something is genuinely grounded, leave it out rather than guess.
 
+Surface the most SPECIFIC true match, not generic framing: when the job description specifically emphasizes systems administration, IT infrastructure, endpoint/device management, or hands-on technical systems management, and the candidate's full resume genuinely contains that kind of experience (for example a System Administrator role - device/endpoint management, Intune, Google Admin, network infrastructure), the Professional Summary should reference that concrete real experience explicitly rather than falling back on vague "systems-minded" phrasing. It's a stronger, more precise, and fully truthful match. Only do this when that experience actually appears in the resume below; never invent it, and don't force it in when the job isn't actually about those things.
+
+Terminology consistency: whenever the candidate's CRM background is referenced in a skills list, write it as exactly "CRM Platform Experience" (not "CRM", "CRM Platforms", "CRM Software", etc.) so it reads identically across the Technical Skills and Core Competencies sections.
+
 Never leave a section byte-for-byte identical to its current content as a default/safe choice - "no fabrication" means don't invent new facts, it does not mean "don't bother tailoring this one." At minimum, reorder/re-emphasize using what's already there (see the [LIST] notes below for sections where this applies); only genuinely identical output when the current content already happens to be the precise best fit for this job.
 
 For each section:
@@ -304,6 +342,12 @@ ${placeholdersBlock}`,
   const result = placeholders.map((p) => p.originalContent);
   for (const r of input?.replacements ?? []) {
     if (r.index >= 0 && r.index < result.length && r.text) result[r.index] = r.text;
+  }
+  // Deterministic terminology normalization: guarantee the CRM wording is
+  // identical across the skills sections and across runs, no matter how the
+  // LLM phrased it (see normalizeCrmTerminology).
+  for (let i = 0; i < placeholders.length; i++) {
+    if (isSkillsSection(placeholders[i])) result[i] = normalizeCrmTerminology(result[i]);
   }
   return result;
 }

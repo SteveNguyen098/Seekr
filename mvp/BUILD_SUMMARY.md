@@ -120,6 +120,27 @@ filtering and matching.
   your floor, and contract/temp language with no stated conversion path.
   All regex-based, not AI — free and instant, so no API call is wasted on
   jobs that were never going to work.
+- `detectLocationPreference(descriptionText)` is a *soft* signal,
+  deliberately separate from `passesHardRequirements` and never called
+  from inside it: a job description stating a regional/timezone
+  preference ("prioritizing candidates in the Central Standard time
+  zone") that doesn't match the candidate's own location shouldn't
+  silently skip the posting the way a real hard requirement does - the
+  candidate's own instruction was to see the flag and decide for
+  themselves, not have the tool decide for them. Matches non-Eastern US
+  timezone names/abbreviations and "West Coast" (`NON_EASTERN_TZ_RE`) -
+  Eastern/ET/East Coast are deliberately excluded from the pattern since
+  that's the candidate's own zone and should never trigger it. Returns
+  the matched phrase(s) plus a ~180-character context window around the
+  first hit (not just the bare keyword) so the actual wording - including
+  any "...or Eastern" escape hatch that would make it a non-issue - is
+  visible before a decision gets made. `src/index.ts` calls this once
+  the best-match job is picked and prints it as a clearly-marked `!
+  LOCATION/TIMEZONE SOFT-FLAG` line immediately before "Tailoring resume
+  to this role..." - after ranking (so it's evaluating the one job that's
+  actually about to get a resume generated for it, not every candidate),
+  but strictly before any resume generation happens, and the run
+  continues regardless of the flag.
 
 **Stage B — AI ranking: [`src/match.ts`](src/match.ts)**
 Only the postings that survive Stage A get sent to Claude. `rankJobs(...)`
@@ -688,6 +709,67 @@ explicit `[MUST PRESERVE: ...]` note, and the page-count retry's overflow
 feedback specifically instructs trimming other sections first rather than
 cutting that reference as a default response to overflow.
 
+**Deterministic terminology normalization — `normalizeCrmTerminology()`.**
+The no-fabrication rule constrains *what facts* can appear, but says
+nothing about *exact wording* - and the LLM doesn't always phrase the same
+underlying fact identically twice. A real run emitted `"CRM Platforms"` in
+Technical Skills while Core Competencies (and every other run) used the
+candidate's own canonical phrase, `"CRM Platform Experience"` - not a
+fabrication, just wording drift that made otherwise-identical resumes look
+inconsistent side by side. Rather than trying to hold this with prompt
+wording alone (which is exactly the kind of thing that regresses silently
+across runs), `generateReplacements()` now runs every skills-section
+replacement through a deterministic regex normalization pass after the
+LLM call returns, before that text is spliced into the document - so the
+canonical wording is guaranteed regardless of phrasing choice.
+`isSkillsSection()` scopes this to the Technical Skills/Core Competencies
+placeholders only (matched against `sectionHeader`/`paragraphText`) -
+forcing the exact noun phrase into prose elsewhere (the Professional
+Summary) would read unnaturally.
+
+The regex itself needed a second pass: `/\bCRM\b(?:[\s-]+(?:Platform|
+Platforms|...))*/gi` looked reasonable but failed on exactly the
+motivating case. Regex alternation takes the *first* alternative that
+matches at a position, not the longest, and `Platform` is a prefix of
+`Platforms` - so against `"CRM Platforms"`, the group matched only
+`"CRM Platform"`, leaving the trailing `"s"` outside the replaced span
+entirely. The replace call then swapped in the canonical phrase and left
+that stray `"s"` glued on immediately after, producing `"CRM Platform
+Experiences"` - a *different*, new inconsistency, caught by a live test
+run before it shipped (not a hypothetical). Fixed by listing every plural
+form before its singular prefix (`Platforms` before `Platform`, `Tools`
+before `Tool`, `Systems` before `System`, `Applications` before
+`Application`) so the longer alternative gets first crack at matching.
+Verified via a dedicated unit test importing the real exported function
+(not a hand-copied mirror, which is how the first version of this test
+missed the bug) against 12 cases including the exact original failure
+string, an already-canonical no-op case, and an unrelated word
+(`"CRMagic"`) that must NOT be touched - all pass. Also confirmed the
+normalization runs *before* each attempt's page-count check inside the
+generation loop (not as a post-hoc step after convergence is already
+verified), so a length change from normalization can never silently
+invalidate an already-confirmed page count.
+
+**Surfacing the most specific genuinely-true match — Professional
+Summary.** The no-fabrication rule's "don't invent facts" framing had a
+side effect: it made the prompt lean toward safe, generic phrasing even
+when a *more specific, equally true* fact was sitting right there in the
+resume and would be a stronger match. Confirmed live: a job description
+emphasizing HR-systems administration produced a generic "systems-minded"
+Summary opening rather than naming the candidate's actual System
+Administrator experience (device/endpoint management via Intune and
+Google Admin, network infrastructure - a real past role, not adjacent
+inference). Added an explicit prompt instruction: when the job
+description specifically emphasizes systems administration/IT
+infrastructure/technical systems management and that experience actually
+appears in the resume, name it explicitly rather than defaulting to
+vaguer framing - still fully bound by the no-fabrication rule above, this
+is about *which true thing* to lead with, not license to add anything new.
+Verified live on the same JD after the change: the regenerated Summary
+opens with "hands-on experience administering technical systems
+(including device/endpoint management via Intune and Google Admin)" -
+the specific, real experience, not the generic placeholder phrasing.
+
 **Splicing — `applyReplacements()`.** Placeholders are processed in
 *reverse* document order (sorted by `runXmlStart` descending) so each
 splice's offset stays valid for the ones still to come - no full-document
@@ -865,7 +947,7 @@ Confirmed working across these runs:
 | [`src/resume.ts`](src/resume.ts) | Parse resume file → text + contact fields |
 | [`src/context.ts`](src/context.ts) | Load optional personal-context files (profile, Q&A, work auth) |
 | [`src/scrape.ts`](src/scrape.ts) | Read a career page → list of job postings |
-| [`src/filter.ts`](src/filter.ts) | Cheap keyword/salary/location/experience/employment-type filtering |
+| [`src/filter.ts`](src/filter.ts) | Cheap keyword/salary/location/experience/employment-type filtering, plus the timezone/region soft-flag |
 | [`src/match.ts`](src/match.ts) | Claude-based ranking of resume vs. job postings |
 | [`src/apply.ts`](src/apply.ts) | Discover and fill application form fields (by far the largest module) |
 | [`src/resumeGenerator.ts`](src/resumeGenerator.ts) | Detect + tailor bracket+italic `.docx` placeholders, verify page count via Word, save the tailored file |
