@@ -96,6 +96,20 @@ const DECLINE_RE =
 // messages/SMS - paired with DECLINE_RE below so the same "no thanks"
 // phrasing detection doubles for both EEOC decline options and this.
 const TEXT_MESSAGE_RE = /text messag|\bsms\b/i;
+// "Where do you plan on working from (for payroll tax purposes)?" and
+// similar work-location / payroll-jurisdiction questions ask for the same
+// answer as a plain "City"/"Current Location" field - the candidate's own
+// location - just phrased around where they'll physically work rather than
+// where they currently live. Confirmed live on Ramp's Ashby form: this is
+// the same city/state/country autocomplete widget, and without this the
+// field fell through to Claude, which guessed "Remote (US)" (not a real
+// geographic option) instead of the profile's actual city. The "where"
+// arm is bounded to the same clause (stops at a "?") and requires a
+// work/live/reside/located/based word so it can't swallow unrelated
+// "where did you hear about us"-style questions; the payroll arm requires
+// a location/tax word nearby so it can't match a stray "payroll" mention.
+const WORK_LOCATION_RE =
+  /\bwhere\b[^?]*\b(work|working|located|based|reside|live|living)\b|\bwork location\b|\bpayroll\s+(tax|location|state|jurisdiction|purpose)/i;
 const HOW_HEARD_OPPORTUNITY_CANDIDATES = ["LinkedIn", "LinkedIn Job Posting", "LinkedIn Jobs", "Social Media", "Professional Network", "Other"];
 const HOW_HEARD_CANDIDATES = ["Company careers page", "Company website", "Careers page", "Website", "Online research", "Search engine", "Other"];
 const AI_POLICY_CANDIDATES = ["No"];
@@ -1234,7 +1248,25 @@ export async function fillApplication(
       await setField(profile.address);
       continue;
     }
-    if ((labelLower.includes("city") || labelLower.includes("current location")) && profile.city) {
+    // A work-authorization/sponsorship question can phrase itself around
+    // location ("...authorized to work in the location where this role is
+    // based?", confirmed live on Vanta's form) and would otherwise trip
+    // WORK_LOCATION_RE's "where...based" arm - guard it out so such a
+    // question is never mistaken for a "fill in your city" field. (In
+    // practice these render as Yes/No choice-buttons handled earlier in
+    // this loop, but this keeps the text/combobox-shaped case safe too.)
+    const looksLikeAuthQuestion = /authoriz|sponsor|eligible to work|legally.*\bwork\b|right to work/i.test(labelLower);
+    const isLocationField =
+      !looksLikeAuthQuestion &&
+      (labelLower.includes("city") ||
+        // Bare/prefixed "Location" (confirmed live on Vanta: a field
+        // labeled exactly "Location"), anchored so it can't swallow
+        // "relocation" or "Are you open to relocation?" (which has its own
+        // qa_context answer and must go to Claude, not be filled with a
+        // city).
+        /^(current |preferred |your )?location$/.test(labelLower) ||
+        WORK_LOCATION_RE.test(labelLower));
+    if (isLocationField && profile.city) {
       // "Current Location" (confirmed live on Ashby: a single combined
       // city/state/country combobox, e.g. "Decatur, Georgia, United
       // States") is the same kind of field as a bare "City" one, just a
@@ -1242,6 +1274,9 @@ export async function fillApplication(
       // general answering instead of this deterministic, profile-sourced
       // path, and Claude guessed a plausible-looking but wrong city
       // ("Atlanta" rather than the real "Decatur") with no disambiguation.
+      // WORK_LOCATION_RE extends the same handling to "where do you plan on
+      // working from"/payroll-jurisdiction phrasings (see its definition) -
+      // the honest answer to those is the candidate's own city too.
       // Bare city names are frequently ambiguous (there are multiple US
       // "Decatur"s, "Springfield"s, etc.) - a search-driven autocomplete
       // will happily return a same-named city in the wrong state, which is
