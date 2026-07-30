@@ -154,7 +154,7 @@ filling out a posting Claude itself flagged as a weak fit.
 ### 5. Filling out the application — [`src/apply.ts`](src/apply.ts)
 
 This is the most involved piece, because real application forms are messy.
-It's grown a lot through live testing against seven different companies'
+It's grown a lot through live testing against many different companies'
 forms — most of what follows exists because a specific real form broke an
 earlier, simpler version.
 
@@ -162,8 +162,8 @@ earlier, simpler version.
 job, clicks "Apply" if needed, then polls every frame on the page (not
 just the main one) until a plausible number of form fields exist —
 necessary because some companies embed the real application as a
-cross-origin iframe on their own branded domain (Samsara does this: the
-actual Greenhouse form loads inside an iframe pointing at
+cross-origin iframe on their own branded domain (one live test site does
+this: the actual Greenhouse form loads inside an iframe pointing at
 `job-boards.greenhouse.io/embed/job_app`). `findFormContext(page)` then
 figures out whether the real form lives in the main page or one of its
 frames, by counting fields in each and picking whichever has the most.
@@ -172,7 +172,7 @@ Every downstream function operates on that resolved `Page | Frame`.
 **Discovering fields.** `discoverFields(ctx)` queries `input, textarea,
 select, [role="combobox"]` — not just the three form-control tags, because
 a combobox's clickable trigger isn't always a real `<input>`. Confirmed
-live on a Rippling-hosted form (PatientNow): gender, Hispanic/Latino,
+live on a Rippling-hosted test site: gender, Hispanic/Latino,
 veteran status, and disability status all render as a bare `<div
 role="combobox">` with no underlying `<input>` anywhere in their markup,
 completely invisible to a query that only looked for form-control tags —
@@ -247,8 +247,8 @@ resolve their real question and answer correctly.
 
 **The same false-signal problem, found again on a fourth platform (Ashby)
 via a different generic word.** A field labeled "Current Location" on
-Angle Health's application form was reported in the fill summary as
-literally "Start typing..." instead of its real question - the tell that
+a live Ashby-hosted test site's application form was reported in the fill
+summary as literally "Start typing..." instead of its real question - the tell that
 gave this one away, rather than a wrong-but-plausible answer like the
 "Select" case above. Root cause: Ashby's `<label for="X">Current
 Location</label>` points at an `X` the real `<input>` doesn't actually
@@ -333,8 +333,8 @@ stored. The only reliable way to answer one is to actually open it and
 click a real rendered option. Two more subtleties came from live testing:
 - **Scoping.** A naive `[role="option"]` query grabs every currently
   open option on the *entire page*, not just the field being answered.
-  Samsara's page keeps a ~250-item phone/country-code picker's listbox
-  mounted in the DOM at all times, and an unscoped query mixed all 250 of
+  One live test site's page keeps a ~250-item phone/country-code picker's
+  listbox mounted in the DOM at all times, and an unscoped query mixed all 250 of
   those into every other dropdown's results — burying the 4-6 real
   options for something like "highest level of education" so badly that
   matching failed outright. `getListboxOptions()` fixes this by reading
@@ -397,13 +397,13 @@ pick like a single-select does.
    also explicitly excludes anything mentioning marketing, third-party
    sharing, or indefinite/unrelated retention) gets auto-agreed. Anything
    broader is left alone. This also covers bare GDPR-style labels with no
-   "consent"/"acknowledge" wording at all — a real OneTrust field labeled
-   exactly `"Data Protection Notice *"` was initially left for manual
+   "consent"/"acknowledge" wording at all — a real Greenhouse-hosted field
+   labeled exactly `"Data Protection Notice *"` was initially left for manual
    review because the label alone didn't literally say "consent" or
    "process my data," even though live inspection showed it renders with
    exactly one real option, `Acknowledge/Confirm` — mechanically identical
-   to the case already trusted for Samsara's `"Processing of Personal
-   Data*"` field, just EU-style phrasing. `isStandardRecruitmentConsent()`
+   to the case already trusted for another live test site's `"Processing
+   of Personal Data*"` field, just EU-style phrasing. `isStandardRecruitmentConsent()`
    now short-circuits to true for bare `"Data Protection Notice/Policy"`,
    `"Privacy Notice/Policy"`, and `"GDPR Notice"` labels the same way it
    already did for `"Privacy Notice Acknowledgement"`, still gated by the
@@ -415,8 +415,8 @@ pick like a single-select does.
    trailing whitespace missed the real field entirely on the first attempt
    at this fix.
 3. **"Yes/No" choice-button questions** (work authorization, visa
-   sponsorship) — answered via Claude, not skipped. Confirmed live on
-   Ashby (Angle Health's application form) that these don't use a real
+   sponsorship) — answered via Claude, not skipped. Confirmed live on a
+   real Ashby-hosted application form that these don't use a real
    `<input type="radio">` pair at all: it's a single hidden `<input
    type="checkbox" tabindex="-1">`, present only for the site's own
    internal form state, with two plain `<button>` elements ("Yes"/"No")
@@ -499,8 +499,8 @@ pick like a single-select does.
    generic "how did you hear about **us/the company**" → "online
    research"/"careers page". Both `HOW_HEARD_RE` regexes match "did you
    hear/find/learn" *and* "have you heard/found/learned" phrasing — an
-   earlier version only covered "did you," and a real Samsara field
-   ("Where **have** you learned about Samsara? Select all that apply.")
+   earlier version only covered "did you," and a real field on one live
+   test site ("Where **have** you learned about us? Select all that apply.")
    used the latter, so it silently missed this deterministic path
    entirely and fell through to Claude instead. That was the actual root
    cause behind that field intermittently coming back unanswered in live
@@ -597,10 +597,11 @@ would otherwise silently discard a typed value while reporting success.
 
 **That confirmation only proves the value stuck at that instant, though —
 not that it survives the rest of the run.** A real live run surfaced a
-case of exactly that: Samsara's `"First Name"` field was correctly filled
-and verified early on, but by the time the run finished, it appeared
-empty — most likely because Samsara's heavy iframe-embedded React form
-re-rendered at some point during the many later combobox interactions
+case of exactly that: the iframe-embedded test site's `"First Name"` field
+was correctly filled and verified early on, but by the time the run
+finished, it appeared empty — most likely because that site's heavy
+iframe-embedded React form re-rendered at some point during the many later
+combobox interactions
 elsewhere on the page, silently resetting an already-filled plain text
 input in a way the original per-field check couldn't catch (it only ever
 looked once, right after filling). `fillTextVerified()` now takes an
@@ -670,8 +671,8 @@ or the section's own current content may appear in the output. This rule
 exists because an earlier version of the prompt let Claude "upgrade" the
 resume's generic `"CRM Platform Experience"` into the specific
 `"Salesforce"` just because the target job description asked for
-Salesforce - a real fabrication caught during testing on the actual
-Samsara JD, not a hypothetical. The strengthened prompt fixed it on the
+Salesforce - a real fabrication caught during testing on an actual live
+job description, not a hypothetical. The strengthened prompt fixed it on the
 very next run (verified by diffing the before/after generated text
 against the source resume).
 
@@ -795,7 +796,8 @@ write noticeably shorter" or "too short, write more detail"), and the
 attempt closest to the original page count is kept regardless of whether
 any attempt converged exactly - `converged: false` in the result signals
 this honestly rather than silently shipping a wrong-length file. Verified
-live against real OneTrust and Samsara job descriptions: both converged
+live against two different real job descriptions (including the
+iframe-embedded test site's): both converged
 on the original 1-page layout on the first attempt.
 
 **Naming.** `extractCompanyAndRole()` makes a small Claude tool-use call
@@ -824,19 +826,21 @@ action; there's no code path that could do that even by accident.
 ## What's actually working (verified with live runs)
 
 Tested end-to-end, more than once each, against real live public job
-boards using your actual resume:
+boards using your actual resume. Company names are withheld below (these
+are real employers' live sites) - each row is a distinct test site,
+identified by its ATS and what made it a useful test case:
 
-| Company | ATS | Notable for |
-|---|---|---|
-| Attentive | Greenhouse | First working end-to-end run |
-| Gusto | Greenhouse | Regression check |
-| Checkr | Greenhouse | Regression check |
-| Palantir | Lever | Found and fixed a real selector-fragility bug; hit a CAPTCHA (expected, not solved) |
-| OneTrust | Greenhouse | Genuinely Atlanta-based match; personal-context fields first proven live |
-| Samsara | Greenhouse (iframe-embedded on their own domain) | The hardest form by far — iframe detection, combobox scoping/harvesting, multi-select, and the retry mechanism were all proven or fixed here |
-| Iterable | Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
-| PatientNow | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
-| Angle Health | Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
+| ATS | Notable for |
+|---|---|
+| Greenhouse | First working end-to-end run |
+| Greenhouse | Regression check |
+| Greenhouse | Regression check |
+| Lever | Found and fixed a real selector-fragility bug; hit a CAPTCHA (expected, not solved) |
+| Greenhouse | Genuinely Atlanta-based match; personal-context fields first proven live |
+| Greenhouse (iframe-embedded on the company's own domain) | The hardest form by far — iframe detection, combobox scoping/harvesting, multi-select, and the retry mechanism were all proven or fixed here |
+| Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
+| Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
+| Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
 
 Confirmed working across these runs:
 - Scraping a real career page and finding every open posting.
@@ -864,7 +868,8 @@ Confirmed working across these runs:
   tailoring them to a specific live job description with no fabricated
   skills/tools, verifying the result renders to the same page count as the
   original via real Word rendering, and uploading the tailored file in
-  place of the static resume - confirmed on both OneTrust and Samsara.
+  place of the static resume - confirmed on two different live test sites,
+  including the iframe-embedded one.
 
 ## What's rough or untested
 
@@ -872,8 +877,9 @@ Confirmed working across these runs:
   untested against a real site.**
 - **Multi-select fields were the least reliable field type** — confirmed
   happening intermittently across repeated live runs against the exact
-  same field on the exact same form (two consecutive Samsara runs,
-  identical resume/JD/criteria, one succeeded and one didn't). One real
+  same field on the exact same form (two consecutive runs against the
+  iframe-embedded test site, identical resume/JD/criteria, one succeeded
+  and one didn't). One real
   instance of this traced back to an actual root cause rather than pure
   non-determinism (the how-heard regex gap described above) and is now
   fixed outright. The residual risk for genuinely novel multi-select
@@ -882,8 +888,8 @@ Confirmed working across these runs:
   the existing retry (see "The multi-select fallback" above), which
   should meaningfully reduce, though not provably eliminate, how often
   this class of field still needs manual completion.
-- **Bot detection can be a hard blocker.** Palantir's Lever-hosted form
-  presented a CAPTCHA challenge partway through the run. The tool can't
+- **Bot detection can be a hard blocker.** One Lever-hosted test site's
+  form presented a CAPTCHA challenge partway through the run. The tool can't
   and won't attempt to solve it.
 - **Cover letters aren't handled at all** — no generation, no upload.
 - **No automated test suite.** Verification so far has been live manual
