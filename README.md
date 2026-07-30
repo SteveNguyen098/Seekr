@@ -59,7 +59,7 @@ resume, find one matching job and fill out its application form.
    (marketing use, third-party sharing, indefinite retention for unrelated
    purposes) is always left for you instead. This also covers bare
    GDPR-style labels with no "consent"/"acknowledge" wording at all (e.g.
-   a real OneTrust field labeled exactly "Data Protection Notice") - its
+   a real Greenhouse-hosted field labeled exactly "Data Protection Notice") - its
    only real option was `Acknowledge/Confirm`, mechanically identical to
    the "process my personal data" case, just EU-style phrasing.
 7. A handful of specific questions get fixed, deterministic answers rather
@@ -69,10 +69,10 @@ resume, find one matching job and fill out its application form.
      the closest available equivalent). The more generic "how did you hear
      about **us/the company**" → "online research"/"careers page" instead.
      Both patterns match "did you hear/find/learn" *and* "have you
-     heard/found/learned" phrasing - a real Samsara field ("Where **have**
-     you learned about Samsara?") used the latter and was missed by an
-     earlier version of this regex, which is why it looked like flaky AI
-     behavior when it was actually a routing gap.
+     heard/found/learned" phrasing - a real field on one live test site
+     ("Where **have** you learned about us?") used the latter and was
+     missed by an earlier version of this regex, which is why it looked
+     like flaky AI behavior when it was actually a routing gap.
    - Salary/compensation questions come in two shapes, answered
      differently: a yes/no "do you accept the range listed in this
      posting?" gets a confident "Yes" whenever the job description states
@@ -107,7 +107,7 @@ resume, find one matching job and fill out its application form.
 9. Right before the screenshot, every plain text field it filled gets
    **re-checked one more time** against the live page and, if needed,
    repaired. A field can be correctly filled and verified early in a run
-   and still end up looking empty by the end - on a heavy form (Samsara's
+   and still end up looking empty by the end - on a heavy form (an
    iframe-embedded widget in particular), something that happens later
    (opening/closing several other dropdowns, a form-wide re-render) can
    silently reset an already-filled input. This final pass catches that:
@@ -248,7 +248,7 @@ affected.
 
 ```bash
 npx tsx src/index.ts \
-  --career-url "https://job-boards.greenhouse.io/attentive" \
+  --career-url "https://job-boards.greenhouse.io/<company>" \
   --resume "./path/to/resume.docx" \
   --criteria "./criteria.json"
 ```
@@ -269,39 +269,39 @@ npx tsx src/index.ts \
 
 ## Verified against (live, as of this writing)
 
-- `job-boards.greenhouse.io/attentive` (Greenhouse)
-- `job-boards.greenhouse.io/gusto` (Greenhouse)
-- `job-boards.greenhouse.io/checkr` (Greenhouse)
-- `job-boards.greenhouse.io/onetrust` (Greenhouse)
-- `job-boards.greenhouse.io/iterable` (Greenhouse)
-- `job-boards.greenhouse.io/samsara` (Greenhouse, embedded via iframe on
-  Samsara's own branded domain - see below)
-- `jobs.lever.co/palantir` (Lever)
-- `ats.rippling.com/patientnow` (Rippling ATS - a third platform, structurally
-  different from Greenhouse/Lever in ways that mattered, see Known
-  limitations)
-- `jobs.ashbyhq.com/anglehealth` (Ashby - a fourth platform; its own EEOC
-  radio groups and Yes/No screening-question button pairs each surfaced
-  their own distinct shape, see Known limitations)
+Tested against real, live job postings on four ATS platforms (company
+names withheld - these are real employers' live sites, not test fixtures):
+
+- **Greenhouse** (`job-boards.greenhouse.io/<company>`) - 6 boards, including
+  one embedded via iframe on the hiring company's own branded domain (see
+  Known limitations for what that surfaced).
+- **Lever** (`jobs.lever.co/<company>`) - 1 board.
+- **Rippling ATS** (`ats.rippling.com/<company>`) - 1 board; a third
+  platform, structurally different from Greenhouse/Lever in ways that
+  mattered, see Known limitations.
+- **Ashby** (`jobs.ashbyhq.com/<company>`) - 1 board; a fourth platform -
+  its own EEOC radio groups and Yes/No screening-question button pairs
+  each surfaced their own distinct shape, see Known limitations.
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
 matching the printed report exactly.
 
-Resume tailoring specifically has been verified live against OneTrust and
-Samsara: both converged on the original 1-page layout on the first attempt,
-uploaded the tailored file (confirmed via the report's "Attach" line) in
-place of the static template, and the generated content was checked
-against the source resume line-by-line to confirm nothing was fabricated
-(see the no-fabrication note under "Resume tailoring" above - one real
-instance of this was caught and fixed during testing).
+Resume tailoring specifically has been verified live against two of the
+Greenhouse-hosted boards above (including the iframe-embedded one): both
+converged on the original 1-page layout on the first attempt, uploaded the
+tailored file (confirmed via the report's "Attach" line) in place of the
+static template, and the generated content was checked against the source
+resume line-by-line to confirm nothing was fabricated (see the
+no-fabrication note under "Resume tailoring" above - one real instance of
+this was caught and fixed during testing).
 
 ## Known limitations (POC scope)
 
 - Career page scraping has fast paths for Greenhouse and Lever, and a
   generic link-heuristic fallback for everything else (Workday hasn't been
   tested live yet). Confirmed live that the fallback doesn't work on
-  Ashby's listing pages specifically - `jobs.ashbyhq.com/anglehealth`
+  Ashby's listing pages specifically - a real Ashby-hosted listing page
   returns 0 postings from `listJobs()` even though the site clearly has
   openings - so applying to a specific known Ashby job currently means
   pointing directly at that job's own URL rather than the company's
@@ -439,8 +439,8 @@ instance of this was caught and fixed during testing).
 - **Routine Yes/No screening questions (work authorization, visa
   sponsorship) are answered, not skipped**, even when they visually look
   like the same kind of radio/checkbox control the EEOC bullet above still
-  leaves alone. Confirmed live on Ashby (Angle Health's application form)
-  that these don't actually use a real `<input type="radio">` pair at all -
+  leaves alone. Confirmed live on Ashby that these don't actually use a
+  real `<input type="radio">` pair at all -
   it's a single hidden `<input type="checkbox" tabindex="-1">` present only
   for the site's own internal form state, with the real clickable UI being
   two plain `<button>` elements ("Yes"/"No") sitting alongside it as
@@ -501,12 +501,12 @@ instance of this was caught and fixed during testing).
   `<label>`) independent of which cascade step actually supplied the
   field's label text.
 - **Company-embedded application forms are supported, including
-  cross-origin iframes** (e.g. Samsara embeds Greenhouse's form via
-  `job-boards.greenhouse.io/embed/job_app` inside an iframe on
-  `samsara.com`). `findFormContext()` scans the main page and every frame
+  cross-origin iframes** (e.g. one live test site embeds Greenhouse's form
+  via `job-boards.greenhouse.io/embed/job_app` inside an iframe on its own
+  branded domain). `findFormContext()` scans the main page and every frame
   for whichever one actually holds the form fields and operates on that.
-- **Bot detection can block the flow entirely.** Palantir's Lever form
-  presented a CAPTCHA challenge partway through filling. The tool makes no
+- **Bot detection can block the flow entirely.** One Lever-hosted test
+  site's form presented a CAPTCHA challenge partway through filling. The tool makes no
   attempt to solve or bypass these (and never should) - it's a hard stop
   that requires a human. Not every ATS/company site will be automatable
   for this reason.
@@ -516,8 +516,8 @@ instance of this was caught and fixed during testing).
   their inputs (`aria-labelledby`, `aria-label`, `<label for>`, wrapping
   `<label>`, or placeholder text). Fields with none of these are always
   left blank rather than guessed at - on more complex forms this can leave
-  a couple dozen fields unlabeled and skipped. Confirmed live on
-  PatientNow's Rippling-hosted form: three fields (salary requirements,
+  a couple dozen fields unlabeled and skipped. Confirmed live on a
+  Rippling-hosted test form: three fields (salary requirements,
   start date, referral source) genuinely expose no label through any of
   these signals at all - a real remaining gap, not something the
   `aria-labelledby` fix above resolved, since there's simply nothing to
