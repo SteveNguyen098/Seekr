@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Seekr</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Seekr</h1>
+      <span class="sub">auto-apply &mdash; stops before submit, always</span>
+    </header>
+
+    <section class="form">
+      <label class="field">
+        <span>Job posting or career page URL</span>
+        <input id="url" type="text" placeholder="https://..." spellcheck="false" />
+      </label>
+
+      <div class="kind">
+        <label><input type="radio" name="kind" value="job" checked /> A single job posting</label>
+        <label><input type="radio" name="kind" value="board" /> A career board <em>(uses criteria.json)</em></label>
+      </div>
+
+      <label class="field">
+        <span>Resume</span>
+        <div class="row">
+          <input id="resume" type="text" placeholder="No file selected" readonly />
+          <button id="pick" class="ghost">Browse…</button>
+        </div>
+      </label>
+
+      <div class="actions">
+        <button id="run" class="primary">Run</button>
+        <button id="stop" class="ghost" disabled>Stop</button>
+        <span id="status" class="status">Idle</span>
+      </div>
+    </section>
+
+    <section id="pause" class="pause hidden">
+      <div>
+        <strong>Waiting on you.</strong>
+        <p id="pauseMsg"></p>
+      </div>
+      <button id="continue" class="primary">Continue</button>
+    </section>
+
+    <section class="results hidden" id="results">
+      <div class="job" id="job"></div>
+      <div class="cols">
+        <div>
+          <h2>Filled <span id="filledCount" class="pill"></span></h2>
+          <ul id="filled"></ul>
+        </div>
+        <div>
+          <h2>Skipped <span id="skippedCount" class="pill"></span></h2>
+          <ul id="skipped"></ul>
+        </div>
+      </div>
+      <div id="notes"></div>
+      <div id="shots" class="shots"></div>
+    </section>
+
+    <section class="log">
+      <h2>Output</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

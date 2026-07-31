@@ -3,7 +3,7 @@ import { chromium } from "playwright";
 import Anthropic from "@anthropic-ai/sdk";
 import readline from "node:readline/promises";
 import path from "node:path";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { loadResume } from "./resume.js";
 import { listJobs, getJobDescription } from "./scrape.js";
 import { filterByTitle, filterByLocation, passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
@@ -320,6 +320,36 @@ try {
   }
 
   console.log(`\nThe application was NOT submitted.`);
+
+  // Optional machine-readable copy of everything just printed. Purely
+  // additive: the console output above is unchanged, and nothing in the
+  // pipeline behaves differently when this flag is absent. Exists so a UI
+  // wrapper can render structured results instead of scraping stdout.
+  if (args["json-out"]) {
+    await writeFile(
+      path.resolve(args["json-out"]),
+      JSON.stringify(
+        {
+          job: {
+            title: best.job.title,
+            url: best.job.url,
+            location: best.job.location,
+            score: best.score,
+            reasoning: best.reasoning,
+          },
+          resumeUploaded: resumeToUpload,
+          locationFlag: locPref.flagged ? { matched: locPref.matched, snippet: locPref.snippet } : null,
+          filled: report.filled,
+          skipped: report.skipped,
+          screenshots: report.screenshots ?? [report.screenshotPath],
+          notes: report.notes ?? [],
+          submitted: false,
+        },
+        null,
+        2
+      )
+    ).catch(() => {});
+  }
 
   if (headed) {
     console.log(`Review the open browser window and submit manually if it looks right.`);
