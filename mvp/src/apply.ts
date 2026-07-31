@@ -58,12 +58,35 @@ export interface DiscoveredField {
    * as opposed to `label`, which for a radio is this one option's own
    * text (e.g. "Male"). Only meaningful for type === "radio". */
   groupQuestion: string;
+  /**
+   * True when this control should never be filled: an anti-bot honeypot, or
+   * a widget that isn't part of the application form at all. Set from the
+   * *static* signals only (see discoverFields) - the position-dependent
+   * reachability check is deliberately deferred to fill time, since it's
+   * the only one a re-render or page transition can invalidate.
+   */
+  skipAlways: boolean;
+  /** Human-readable reason for skipAlways, surfaced in the report. */
+  skipReason: string;
+  /**
+   * True when aria-labelledby resolves to a *visible* element. Marks a
+   * legitimately-hidden control (a real input styled behind a visible
+   * clickable partner - the pattern checkField() handles). Exempts the
+   * field from the fill-time reachability check, which such controls
+   * always fail by design.
+   */
+  hasVisibleLabelPartner: boolean;
 }
 
 export interface FillReport {
   filled: { label: string; value: string; generated?: boolean; lowConfidence?: boolean }[];
   skipped: { label: string; reason: string; required?: boolean }[];
+  /** First page's screenshot; kept for callers that expect a single path. */
   screenshotPath: string;
+  /** One screenshot per page of a multi-page flow. */
+  screenshots?: string[];
+  /** Flow-level messages: cookie choice, why the run stopped, hard stops. */
+  notes?: string[];
 }
 
 const SENSITIVE_RE =
@@ -370,6 +393,62 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // all and silently never fired).
         const idOrName = `${el.id} ${el.getAttribute("name") || ""} ${el.getAttribute("data-testid") || ""}`.trim();
 
+        // --- Anti-bot / not-part-of-the-form detection (static signals) ---
+        //
+        // Rule order below is load-bearing and was derived from live
+        // measurement across two ATS platforms, not from reasoning:
+        //
+        //   field                     aria-hidden  labelledby->visible  rect     correct
+        //   Oracle honeypot           true         -                    199x38   SKIP
+        //   Oracle privacy checkbox   -            yes                  0x0      TICK
+        //   Rippling SMS radios       -            yes                  0x0      CLICK
+        //   Oracle email input        -            -                    620x38   FILL
+        //
+        // aria-hidden is the one signal that separates the trap from the two
+        // legitimate hidden controls; every geometry/style check reports the
+        // honeypot as perfectly visible (it hides via a height:0,
+        // overflow:hidden *ancestor*, so its own box is a normal 199x38).
+        //
+        // ASSUMPTION (not engineered against): a honeypot won't carry an
+        // aria-labelledby pointing at a visible label. True of the one real
+        // trap measured here - a trap doing that would defeat the exemption
+        // below and get filled. Revisit if one ever turns up.
+        const ariaHiddenAttr = el.getAttribute("aria-hidden") === "true";
+        const honeypotNamed = /honey-?pot/i.test(
+          `${el.id} ${el.getAttribute("name") || ""} ${el.getAttribute("aria-label") || ""}`
+        );
+        // Some job pages mount an unrelated AI-assistant widget (Oracle
+        // Digital Assistant ships one in a background dialog) whose textarea
+        // is otherwise discovered as a *required* field of the application.
+        // Scoped to the component/namespace rather than its copy - measured
+        // live: the control is <oj-text-area id="oda-work-summary-text-area">
+        // inside an oj-dialog, so the "oda-" product prefix is the stable
+        // handle. The visible instruction text ("This summary is generated
+        // by AI Assist...") will drift; the component prefix won't.
+        const inAiWidget = !!el.closest(
+          'ai-assistant-container, ai-assistant-skip-navigation-link, [id^="oda-"], [class*="oda-dialog"]'
+        );
+
+        let hasVisibleLabelPartner = false;
+        const labelledbyRef = el.getAttribute("aria-labelledby");
+        if (labelledbyRef) {
+          const target = document.getElementById(labelledbyRef.split(/\s+/)[0]);
+          if (target) {
+            const tr = target.getBoundingClientRect();
+            hasVisibleLabelPartner = tr.width > 0 && tr.height > 0;
+          }
+        }
+
+        let skipAlways = false;
+        let skipReason = "";
+        if (ariaHiddenAttr || honeypotNamed) {
+          skipAlways = true;
+          skipReason = "hidden anti-bot (honeypot) field - deliberately left empty";
+        } else if (inAiWidget) {
+          skipAlways = true;
+          skipReason = "part of the page's AI-assistant widget, not the application form";
+        }
+
         const groupName = type === "radio" ? el.getAttribute("name") || "" : "";
         let groupQuestion = "";
         if (type === "radio") {
@@ -398,10 +477,67 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
 
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion };
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, skipAlways, skipReason, hasVisibleLabelPartner };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
+}
+
+/**
+ * Fill-time check: could a real user's click actually land on this control?
+ *
+ * Deliberately evaluated here rather than during discovery - it's the only
+ * position-dependent signal, so a re-render, an opened dropdown, or a page
+ * transition can invalidate a discovery-time verdict.
+ *
+ * Returns "blocked" ONLY when there's a definite negative answer. Anything
+ * ambiguous returns "inconclusive", and callers must not skip on that: the
+ * failure mode we care about is real fields silently vanishing from the
+ * fill, which is invisible in a report. A trap slipping past here is the
+ * milder failure, since the static aria-hidden/honeypot-name rules catch
+ * the traps actually seen in the wild.
+ *
+ * Two cases are treated as inconclusive on purpose, and are reported
+ * separately because they carry different risk:
+ *  - "zero-size": a 0x0 box, whose "center" is a meaningless coordinate.
+ *    This is the shape of every legitimately-hidden-but-real control
+ *    measured so far - but it's also the shape a novel honeypot would take
+ *    on a site using neither aria-hidden nor an obvious name, so the caller
+ *    surfaces it as a flow note rather than filling it silently.
+ *  - "offscreen": still out of view after we tried to scroll it into view
+ *    (e.g. inside a collapsed accordion) - it gets attempted, and an honest
+ *    fill failure is reported if it truly can't be reached.
+ */
+type Reachability = "reachable" | "blocked" | "inconclusive-zero-size" | "inconclusive-offscreen";
+
+async function reachability(ctx: FormContext, selector: string): Promise<Reachability> {
+  return ctx
+    .$eval(selector, (el) => {
+      const scrollX0 = window.scrollX;
+      const scrollY0 = window.scrollY;
+      // "instant" matters: under CSS scroll-behavior:smooth the scroll would
+      // be async and the hit-test below would read a stale position.
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
+      const r = el.getBoundingClientRect();
+      const verdict = (() => {
+        if (r.width <= 0 || r.height <= 0) return "inconclusive-zero-size";
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return "inconclusive-offscreen";
+        const hit = document.elementFromPoint(cx, cy);
+        if (!hit) return "inconclusive-offscreen";
+        // MUST be self-or-descendant, never ancestor. This single predicate
+        // is the difference between a working guard and one that silently
+        // passes the trap: the measured honeypot's topmost element at its
+        // own center is its *ancestor* (it's clipped inside a height:0
+        // overflow:hidden wrapper), so accepting an ancestor match reports
+        // the trap as perfectly reachable.
+        return hit === el || el.contains(hit) ? "reachable" : "blocked";
+      })();
+      window.scrollTo(scrollX0, scrollY0);
+      return verdict;
+    })
+    .catch(() => "inconclusive-offscreen" as const) as Promise<Reachability>;
 }
 
 /**
@@ -409,9 +545,9 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
  * the real native input is visually hidden (opacity/position tricks) behind
  * a custom-styled replacement, with aria-labelledby pointing at the visible
  * text that's the *actual* clickable surface. Playwright's own .check()
- * correctly refuses to act on an invisible element - confirmed live on
- * Rippling's ATS, where every radio/checkbox is built this way and a plain
- * .check() times out. Falls back to clicking whatever aria-labelledby
+ * correctly refuses to act on an invisible element - confirmed live on a
+ * Rippling-hosted form, where every radio/checkbox is built this way and a
+ * plain .check() times out. Falls back to clicking whatever aria-labelledby
  * resolves to, which is what a real user would actually click.
  */
 async function checkField(ctx: FormContext, selector: string): Promise<boolean> {
@@ -943,18 +1079,19 @@ async function fillTextVerified(
   return true;
 }
 
-export async function fillApplication(
+/** Fills every field on the currently-displayed page/step of a form. */
+async function fillCurrentPage(
   page: Page,
   anthropic: Anthropic,
   resume: Resume,
   resumeFilePath: string,
   jobDescription: string,
-  outDir: string,
   context: PersonalContext,
   jobTitle = ""
-): Promise<FillReport> {
+): Promise<{ filled: FillReport["filled"]; skipped: FillReport["skipped"]; notes: string[] }> {
   const formCtx = await findFormContext(page);
   const fields = await discoverFields(formCtx);
+  const notes: string[] = [];
   const filled: FillReport["filled"] = [];
   const skipped: FillReport["skipped"] = [];
   const toAnswer: AnswerableField[] = [];
@@ -999,6 +1136,49 @@ export async function fillApplication(
 
   for (const field of fields) {
     if (handledSelectors.has(field.selector)) continue;
+
+    // Anti-bot / not-part-of-the-form guard. Reported as a deliberate skip
+    // (required: false) rather than a "couldn't answer" failure - leaving a
+    // honeypot empty is the correct outcome, not a gap.
+    if (field.skipAlways) {
+      skipped.push({ label: field.label || field.selector, reason: field.skipReason, required: false });
+      continue;
+    }
+    // Fill-time reachability. Exempt controls whose aria-labelledby points
+    // at a visible partner: those are real inputs styled behind a visible
+    // clickable surface (checkField handles them) and always fail a
+    // hit-test by design. This exemption MUST run before the check below -
+    // reversing the order would block every such control before anything
+    // could rescue it, including a required consent checkbox that gates
+    // page 1 of a real multi-page flow.
+    if (!field.hasVisibleLabelPartner) {
+      const reach = await reachability(formCtx, field.selector);
+      if (reach === "blocked") {
+        skipped.push({
+          label: field.label || field.selector,
+          reason: "not reachable by a real click (hidden or covered) - left empty",
+          required: false,
+        });
+        continue;
+      }
+      // Fail-open, but not silently. A 0x0 control with no visible
+      // aria-labelledby partner is exactly the shape a novel honeypot would
+      // take on a site that uses neither aria-hidden nor a give-away name.
+      // We still attempt it (skipping on an inconclusive verdict is how
+      // real fields silently vanish), but surface it for review.
+      // File inputs are exempt from the note: a 0x0 <input type="file">
+      // behind a styled dropzone is the near-universal pattern, and
+      // setInputFiles() doesn't need the element to be clickable at all, so
+      // it isn't evidence of anything. Flagging them would fire on every
+      // run of several already-verified forms and train the reader to
+      // ignore these notes, which defeats the point of the signal.
+      if (reach === "inconclusive-zero-size" && field.type !== "file") {
+        notes.push(
+          `Filled a zero-size field with no visible label partner: "${(field.label || field.selector).slice(0, 60)}". Legitimate hidden controls look like this, but so would an unrecognized honeypot - worth a look.`
+        );
+      }
+    }
+
     const labelLower = field.label.toLowerCase();
 
     // Fills a known, deterministic (non-AI-generated) value regardless of
@@ -1464,11 +1644,174 @@ export async function fillApplication(
   }
 
   const finalFilled = await reverifyFilledTextFields(formCtx, filledSelectors, filled, skipped);
+  return { filled: finalFilled, skipped, notes };
+}
 
-  const screenshotPath = path.join(outDir, "application-preview.png");
-  await page.screenshot({ path: screenshotPath, fullPage: true });
+// Advance controls. NEXT_RE is anchored: a real Oracle HCM page carries a
+// session-keepalive "Continue Working" button, which an unanchored
+// /continue/ would happily click instead of the real Next.
+const NEXT_RE = /^(next|continue|save (and|&) continue|save (and|&) next)$/i;
+// Never clicked. The tool has no code path that submits an application.
+const SUBMIT_RE = /submit|finish|send application|complete application/i;
+// Never clicked either - these abandon or reset the flow.
+const ABORT_RE = /^(cancel|discard|back|end session|sign out|log ?out|start over)$/i;
+// Bot-detection. Seeing any of these is a hard stop, never something to
+// work around.
+const CAPTCHA_RE = /captcha|recaptcha|hcaptcha|are you a human|verify you are human|i'm not a robot/i;
+// A code emailed/texted to the candidate. Unreachable programmatically -
+// the tool has no access to the inbox, and shouldn't.
+const VERIFICATION_CODE_RE = /verification code|one-?time (code|password|pin)|\bOTP\b|enter the code|code we (sent|emailed)|security code/i;
+const MAX_PAGES = 10;
 
-  return { filled: finalFilled, skipped, screenshotPath };
+/** Clicks "Reject All Non-Essential" (or the closest decline) on a cookie banner. */
+async function dismissCookieBanner(page: Page): Promise<string | null> {
+  const candidates = [
+    /^reject all non-?essential/i,
+    /^reject all/i,
+    /^decline all/i,
+    /^only (necessary|essential)/i,
+    /^necessary cookies only/i,
+  ];
+  const buttons = await page.$$("button, [role=button], a");
+  for (const re of candidates) {
+    for (const b of buttons) {
+      const t = ((await b.textContent().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+      if (t && re.test(t)) {
+        const ok = await b.click({ timeout: 3000 }).then(() => true).catch(() => false);
+        if (ok) {
+          await delay(800);
+          return t;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Finds a clickable "next/continue" control, excluding submit/abort controls. */
+async function findNextControl(page: Page) {
+  const els = await page.$$("button, [role=button], input[type=button], input[type=submit], a");
+  for (const el of els) {
+    const raw = ((await el.textContent().catch(() => "")) || "") + " " + ((await el.getAttribute("value").catch(() => "")) || "");
+    const text = raw.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    if (SUBMIT_RE.test(text) || ABORT_RE.test(text)) continue;
+    if (!NEXT_RE.test(text)) continue;
+    const usable = await el.isEnabled().catch(() => false);
+    if (usable) return { handle: el, text };
+  }
+  return null;
+}
+
+/** True if the page currently shows a CAPTCHA / bot challenge. */
+async function detectCaptcha(page: Page): Promise<boolean> {
+  const frameHit = page.frames().some((f) => /hcaptcha|recaptcha|captcha/i.test(f.url()));
+  if (frameHit) return true;
+  return page
+    .evaluate((src) => new RegExp(src, "i").test(document.body.innerText || ""), CAPTCHA_RE.source)
+    .catch(() => false);
+}
+
+/**
+ * Multi-page driver. Fills the current step, looks for a Next/Continue
+ * control, clicks it, confirms the page actually advanced, and repeats.
+ *
+ * Never clicks Submit - the loop exits when only a submit control remains.
+ * Stops and reports rather than improvising on: a CAPTCHA, a verification
+ * code it can't read, or a Next that doesn't advance (which almost always
+ * means required fields are still empty - reported with the specific
+ * fields, so the stall is diagnosable rather than a spin).
+ */
+export async function fillApplication(
+  page: Page,
+  anthropic: Anthropic,
+  resume: Resume,
+  resumeFilePath: string,
+  jobDescription: string,
+  outDir: string,
+  context: PersonalContext,
+  jobTitle = "",
+  options: { headed?: boolean; pinTimeoutMs?: number; onPagePrompt?: (msg: string, timeoutMs: number) => Promise<void> } = {}
+): Promise<FillReport> {
+  const filled: FillReport["filled"] = [];
+  const skipped: FillReport["skipped"] = [];
+  const screenshots: string[] = [];
+  const notes: string[] = [];
+
+  const cookieChoice = await dismissCookieBanner(page);
+  if (cookieChoice) notes.push(`Cookie banner: clicked "${cookieChoice}".`);
+
+  let pageNum = 1;
+  for (; pageNum <= MAX_PAGES; pageNum++) {
+    if (await detectCaptcha(page)) {
+      notes.push(`HARD STOP on page ${pageNum}: a CAPTCHA / bot challenge is present. The tool never attempts to solve or bypass these - finish this application manually.`);
+      break;
+    }
+
+    const res = await fillCurrentPage(page, anthropic, resume, resumeFilePath, jobDescription, context, jobTitle);
+    for (const f of res.filled) filled.push({ ...f, label: `[p${pageNum}] ${f.label}` });
+    for (const s of res.skipped) skipped.push({ ...s, label: `[p${pageNum}] ${s.label}` });
+    for (const n of res.notes) notes.push(`[p${pageNum}] ${n}`);
+
+    const shot = path.join(outDir, pageNum === 1 ? "application-preview.png" : `application-preview-page${pageNum}.png`);
+    await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+    screenshots.push(shot);
+
+    // A code sent to the candidate's inbox/phone: not something this tool
+    // can or should retrieve. Headed runs pause so a human can type it and
+    // let the run continue; headless runs exit cleanly, since nobody's there.
+    const needsCode = await page
+      .evaluate((src) => new RegExp(src, "i").test(document.body.innerText || ""), VERIFICATION_CODE_RE.source)
+      .catch(() => false);
+    if (needsCode) {
+      if (options.headed && options.onPagePrompt) {
+        const timeoutMs = options.pinTimeoutMs ?? 5 * 60_000;
+        notes.push(`Page ${pageNum} asked for a verification code - paused for manual entry.`);
+        await options.onPagePrompt(
+          `\nPage ${pageNum} is asking for a verification code, which this tool can't read.\nEnter it in the open browser window, then press Enter here to continue (auto-continues in ${Math.round(timeoutMs / 60000)} min).`,
+          timeoutMs
+        );
+      } else {
+        notes.push(`STOPPED on page ${pageNum}: this step requires a verification code sent to you, which the tool can't read. Re-run with --headed to enter it yourself and let the run continue.`);
+        break;
+      }
+    }
+
+    const next = await findNextControl(page);
+    if (!next) {
+      notes.push(`Reached the end of the flow at page ${pageNum} (no Next/Continue control - only a submit or nothing further). Nothing was submitted.`);
+      break;
+    }
+
+    const urlBefore = page.url();
+    const fingerprintBefore = await page
+      .evaluate(() => `${document.querySelectorAll("input,textarea,select").length}:${(document.body.innerText || "").slice(0, 400)}`)
+      .catch(() => "");
+    await next.handle.click({ timeout: 5000 }).catch(() => {});
+    await delay(3500);
+
+    const urlAfter = page.url();
+    const fingerprintAfter = await page
+      .evaluate(() => `${document.querySelectorAll("input,textarea,select").length}:${(document.body.innerText || "").slice(0, 400)}`)
+      .catch(() => "");
+
+    if (urlAfter === urlBefore && fingerprintAfter === fingerprintBefore) {
+      // Didn't advance. Overwhelmingly this means client-side validation
+      // rejected the step, so name the fields most likely responsible
+      // instead of retrying blindly or reporting a bare failure.
+      const blockers = skipped.filter((s) => s.required).map((s) => s.label);
+      notes.push(
+        `STOPPED on page ${pageNum}: clicked "${next.text}" but the page didn't advance - almost certainly required fields still needing input.` +
+          (blockers.length ? ` Most likely: ${blockers.join("; ")}.` : ` No required field was flagged, so check the page for a validation message.`)
+      );
+      break;
+    }
+    await delay(1500);
+  }
+
+  if (pageNum > MAX_PAGES) notes.push(`Stopped after the ${MAX_PAGES}-page safety cap.`);
+
+  return { filled, skipped, screenshotPath: screenshots[0] ?? path.join(outDir, "application-preview.png"), screenshots, notes };
 }
 
 /**

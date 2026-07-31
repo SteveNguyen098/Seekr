@@ -244,7 +244,21 @@ try {
     best.job.descriptionText,
     outDir,
     personalContext,
-    best.job.title
+    best.job.title,
+    {
+      headed,
+      // Pause (headed only) so a human can type a verification code the tool
+      // can't read. Timeout so an unattended run can't hang forever.
+      onPagePrompt: async (msg: string, timeoutMs: number) => {
+        console.log(msg);
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        await Promise.race([
+          rl.question("\nPress Enter once you've entered it... "),
+          new Promise((r) => setTimeout(r, timeoutMs)),
+        ]);
+        rl.close();
+      },
+    }
   );
 
   const groundTruth = report.filled.filter((f) => !f.generated);
@@ -276,7 +290,18 @@ try {
     for (const s of optionalSkipped) console.log(`  - ${s.label}: ${s.reason}`);
   }
 
-  console.log(`\nScreenshot saved to: ${report.screenshotPath}`);
+  if (report.screenshots && report.screenshots.length > 1) {
+    console.log(`\nScreenshots (one per page):`);
+    for (const s of report.screenshots) console.log(`  - ${s}`);
+  } else {
+    console.log(`\nScreenshot saved to: ${report.screenshotPath}`);
+  }
+
+  if (report.notes?.length) {
+    console.log(`\nFlow notes:`);
+    for (const n of report.notes) console.log(`  ! ${n}`);
+  }
+
   console.log(`\nThe application was NOT submitted.`);
 
   if (headed) {
