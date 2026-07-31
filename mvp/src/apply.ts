@@ -584,12 +584,27 @@ export async function checkField(ctx: FormContext, selector: string): Promise<bo
   await ctx.check(selector, { timeout: 2500 }).catch(() => {});
   if (await isChecked()) return true;
 
-  // 2. Click whatever is actually painted on top of the input. For a
-  //    visually-hidden native input behind a custom-styled replacement,
-  //    that covering element is the surface a real user clicks - and it's
-  //    a better target than the aria-labelledby text, which frequently
-  //    contains hyperlinks ("Privacy Policy", "California Notice") that
-  //    would swallow the click or navigate away instead of toggling.
+  // 2. Focus the control and fire a native click on the input itself.
+  //    Promoted to run this early because it is both the most targeted and
+  //    the safest option: it cannot hit anything except the control being
+  //    toggled. Measured necessary on Oracle HCM Cloud (Oracle JET), where
+  //    clicking the styled span covering the input, or its wrapping label,
+  //    does nothing at all - the component only reacts to events on the
+  //    input. Still a real DOM click through the element's own event path
+  //    (equivalent to the keyboard Space a real user presses, verified to
+  //    behave identically), not an assignment to .checked, so the
+  //    framework's handlers run and its model stays in sync.
+  await ctx
+    .$eval(selector, (el) => {
+      (el as HTMLElement).focus();
+      (el as HTMLElement).click();
+    })
+    .catch(() => {});
+  if (await isChecked()) return true;
+
+  // 3. Click whatever is actually painted on top of the input - for a
+  //    visually-hidden input behind a custom-styled replacement, that's
+  //    the surface a real user clicks.
   const marked = await ctx
     .$eval(selector, (el) => {
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
@@ -608,30 +623,30 @@ export async function checkField(ctx: FormContext, selector: string): Promise<bo
     if (await isChecked()) return true;
   }
 
-  // 3. The aria-labelledby target (what the previous version did, kept as
-  //    a fallback - it's the right answer for widgets whose visible label
-  //    genuinely is the toggle).
+  // 4. The aria-labelledby target - right for widgets whose visible label
+  //    genuinely is the toggle (a live Rippling form's SMS radios work
+  //    this way). Deliberately LAST among the real-click strategies, and
+  //    skipped entirely when that label contains a hyperlink.
+  //
+  //    This is not hypothetical caution: a consent label reading "I
+  //    acknowledge the Privacy Policy and, as applicable, California
+  //    Notice" carries both of those as <a> links. Clicking the label
+  //    landed on one and opened a full-screen Terms and Conditions modal,
+  //    which then covered the form's Next button - so the checkbox ticked
+  //    but the whole flow stalled on page 1 with no obvious cause. A
+  //    strategy that can navigate away or open a dialog has to be the
+  //    option of last resort, not the first thing tried.
   const labelledbyId = await ctx.$eval(selector, (el) => el.getAttribute("aria-labelledby")).catch(() => null);
   if (labelledbyId) {
-    await ctx.click(`[id="${labelledbyId.split(/\s+/)[0]}"]`, { timeout: 2500 }).catch(() => {});
-    if (await isChecked()) return true;
+    const targetSel = `[id="${labelledbyId.split(/\s+/)[0]}"]`;
+    const hasLink = await ctx
+      .$eval(targetSel, (el) => !!el.querySelector("a[href]") || el.tagName === "A")
+      .catch(() => true); // unreadable target -> assume unsafe
+    if (!hasLink) {
+      await ctx.click(targetSel, { timeout: 2500 }).catch(() => {});
+      if (await isChecked()) return true;
+    }
   }
-
-  // 4. Focus the control and fire a native click on the input itself.
-  //    Measured necessary on Oracle HCM Cloud's consent checkbox: clicking
-  //    the styled span that covers it, or its wrapping label, does nothing
-  //    at all - the JET component only reacts to events on the input. This
-  //    is still a real DOM click through the element's own event path
-  //    (equivalent to the keyboard Space a real user would press, which was
-  //    verified to work identically), not an assignment to .checked - so
-  //    the framework's own handlers run and its model stays in sync.
-  await ctx
-    .$eval(selector, (el) => {
-      (el as HTMLElement).focus();
-      (el as HTMLElement).click();
-    })
-    .catch(() => {});
-  if (await isChecked()) return true;
 
   // 5. Last resort: bypass the actionability wait. Still verified, so a
   //    forced click that doesn't actually toggle is reported as a failure
@@ -1766,6 +1781,55 @@ export async function dismissCookieBanner(page: Page): Promise<string | null> {
   return null;
 }
 
+/**
+ * Closes a modal/dialog currently covering the form, returning a short
+ * description of what was closed (or null if nothing was). Only touches
+ * genuinely dismissive controls - a close/X button, or an acknowledgement
+ * button on an informational dialog. Never agrees to anything scoped
+ * beyond acknowledging the dialog itself.
+ */
+async function dismissBlockingOverlay(page: Page): Promise<string | null> {
+  const open = await page
+    .evaluate(() => {
+      const d = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], .oj-dialog')).find((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 200 || r.height <= 200) return false;
+        // CRITICAL: some ATSs render the application form itself inside a
+        // dialog (Oracle HCM Cloud does - the apply flow lives in an
+        // oj-dialog), so "a large dialog is open" is not evidence of an
+        // interloper. Closing that would tear down the form mid-run.
+        // An informational overlay (terms, privacy policy, a notice) has
+        // no form controls in it; the application dialog is full of them.
+        return el.querySelectorAll("input:not([type=hidden]), textarea, select, [role=combobox]").length === 0;
+      });
+      return d ? (d.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60) : null;
+    })
+    .catch(() => null);
+  if (!open) return null;
+
+  const closers = ['[role="dialog"] button[aria-label*="close" i]', '[role="dialog"] .oj-dialog-close', ".oj-dialog button[title*='Close' i]", 'dialog[open] button[aria-label*="close" i]'];
+  for (const sel of closers) {
+    const ok = await page.click(sel, { timeout: 2000 }).then(() => true).catch(() => false);
+    if (ok) {
+      await delay(800);
+      return open;
+    }
+  }
+  // Fall back to an explicit acknowledgement button on the dialog itself.
+  const btns = await page.$$('[role="dialog"] button, dialog[open] button, .oj-dialog button');
+  for (const b of btns) {
+    const t = ((await b.textContent().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+    if (/^(close|ok|got it|dismiss|agree|i agree|accept)$/i.test(t)) {
+      const ok = await b.click({ timeout: 2000 }).then(() => true).catch(() => false);
+      if (ok) {
+        await delay(800);
+        return `${open} [via "${t}"]`;
+      }
+    }
+  }
+  return null;
+}
+
 /** Finds a clickable "next/continue" control, excluding submit/abort controls. */
 async function findNextControl(page: Page) {
   const els = await page.$$("button, [role=button], input[type=button], input[type=submit], a");
@@ -1893,6 +1957,14 @@ export async function fillApplication(
         break;
       }
     }
+
+    // A stray modal (a policy/terms dialog opened by a mis-aimed click, a
+    // cookie re-prompt) sits on top of the form and silently swallows the
+    // Next click - the flow then stalls with no obvious cause. Close any
+    // dialog that's open before looking for Next, and say so, since an
+    // unexpected dialog is itself worth knowing about.
+    const dismissedOverlay = await dismissBlockingOverlay(page);
+    if (dismissedOverlay) notes.push(`[p${pageNum}] Closed an overlay covering the form ("${dismissedOverlay}") before continuing.`);
 
     const next = await findNextControl(page);
     if (!next) {
