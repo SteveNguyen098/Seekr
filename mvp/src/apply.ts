@@ -566,16 +566,78 @@ async function reachability(ctx: FormContext, selector: string): Promise<Reachab
  * plain .check() times out. Falls back to clicking whatever aria-labelledby
  * resolves to, which is what a real user would actually click.
  */
-async function checkField(ctx: FormContext, selector: string): Promise<boolean> {
-  const direct = await ctx.check(selector, { timeout: 3000 }).then(() => true).catch(() => false);
-  if (direct) return true;
-  const labelledbyId = await ctx.$eval(selector, (el) => el.getAttribute("aria-labelledby")).catch(() => null);
-  if (!labelledbyId) return false;
-  const firstId = labelledbyId.split(/\s+/)[0];
-  return ctx
-    .click(`[id="${firstId}"]`, { timeout: 3000 })
-    .then(() => true)
+export async function checkField(ctx: FormContext, selector: string): Promise<boolean> {
+  // Every strategy below is judged by re-reading .checked, never by "the
+  // click didn't throw". The previous version returned true whenever the
+  // aria-labelledby click resolved, which on a real Oracle HCM consent
+  // checkbox reported success while the box stayed unchecked - a false
+  // positive in the report AND a silently blocked form, since that box
+  // gates the first page. Same failure class as the file-upload and
+  // text-fill false positives fixed earlier in this file: proving an action
+  // was *dispatched* is not proving it *landed*.
+  const isChecked = () =>
+    ctx.$eval(selector, (el) => !!(el as HTMLInputElement).checked).catch(() => false);
+
+  if (await isChecked()) return true;
+
+  // 1. The honest path: a real, visible, actionable control.
+  await ctx.check(selector, { timeout: 2500 }).catch(() => {});
+  if (await isChecked()) return true;
+
+  // 2. Click whatever is actually painted on top of the input. For a
+  //    visually-hidden native input behind a custom-styled replacement,
+  //    that covering element is the surface a real user clicks - and it's
+  //    a better target than the aria-labelledby text, which frequently
+  //    contains hyperlinks ("Privacy Policy", "California Notice") that
+  //    would swallow the click or navigate away instead of toggling.
+  const marked = await ctx
+    .$eval(selector, (el) => {
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!hit || hit === el || hit.tagName === "HTML" || hit.tagName === "BODY") return false;
+      hit.setAttribute("data-seekr-check-target", "1");
+      return true;
+    })
     .catch(() => false);
+  if (marked) {
+    await ctx.click('[data-seekr-check-target="1"]', { timeout: 2500 }).catch(() => {});
+    await ctx
+      .$$eval('[data-seekr-check-target="1"]', (els) => els.forEach((e) => e.removeAttribute("data-seekr-check-target")))
+      .catch(() => {});
+    if (await isChecked()) return true;
+  }
+
+  // 3. The aria-labelledby target (what the previous version did, kept as
+  //    a fallback - it's the right answer for widgets whose visible label
+  //    genuinely is the toggle).
+  const labelledbyId = await ctx.$eval(selector, (el) => el.getAttribute("aria-labelledby")).catch(() => null);
+  if (labelledbyId) {
+    await ctx.click(`[id="${labelledbyId.split(/\s+/)[0]}"]`, { timeout: 2500 }).catch(() => {});
+    if (await isChecked()) return true;
+  }
+
+  // 4. Focus the control and fire a native click on the input itself.
+  //    Measured necessary on Oracle HCM Cloud's consent checkbox: clicking
+  //    the styled span that covers it, or its wrapping label, does nothing
+  //    at all - the JET component only reacts to events on the input. This
+  //    is still a real DOM click through the element's own event path
+  //    (equivalent to the keyboard Space a real user would press, which was
+  //    verified to work identically), not an assignment to .checked - so
+  //    the framework's own handlers run and its model stays in sync.
+  await ctx
+    .$eval(selector, (el) => {
+      (el as HTMLElement).focus();
+      (el as HTMLElement).click();
+    })
+    .catch(() => {});
+  if (await isChecked()) return true;
+
+  // 5. Last resort: bypass the actionability wait. Still verified, so a
+  //    forced click that doesn't actually toggle is reported as a failure
+  //    rather than a success.
+  await ctx.check(selector, { timeout: 2000, force: true }).catch(() => {});
+  return isChecked();
 }
 
 /**
