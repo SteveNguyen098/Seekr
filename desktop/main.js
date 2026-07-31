@@ -63,7 +63,7 @@ ipcMain.handle("run", async (_e, opts) => {
   const jsonOut = path.join(os.tmpdir(), `seekr-run-${Date.now()}.json`);
   const outDir = opts.outDir || path.join(MVP_DIR, "out", "desktop");
 
-  const args = ["tsx", "src/index.ts"];
+  const args = ["src/index.ts"];
   if (opts.urlKind === "job") {
     args.push("--job-url", opts.url);
   } else {
@@ -72,12 +72,30 @@ ipcMain.handle("run", async (_e, opts) => {
   args.push("--resume", opts.resume, "--out", outDir, "--json-out", jsonOut);
   if (opts.headed !== false) args.push("--headed");
 
-  send("run-started", { command: `npx ${args.join(" ")}` });
+  send("run-started", { command: `npx tsx ${args.join(" ")}` });
 
-  child = spawn("npx", args, {
+  // Run tsx's CLI directly instead of going through `npx` in a shell.
+  //
+  // shell:true concatenates argv into a command line without escaping, so a
+  // resume path containing spaces ("...\Seekr Resume Template.docx") gets
+  // split and the CLI receives a truncated path - verified failing before
+  // this change. shell:false with "npx.cmd" isn't an option either: Node 24
+  // refuses to spawn .cmd files without a shell (EINVAL). Invoking the
+  // resolved cli.mjs with no shell at all passes argv through verbatim,
+  // which is the only variant measured to deliver the path intact.
+  //
+  // process.execPath is Electron's own binary, so ELECTRON_RUN_AS_NODE makes
+  // it behave as plain Node - meaning this doesn't depend on a system Node
+  // being installed or on PATH.
+  const tsxCli = path.join(MVP_DIR, "node_modules", "tsx", "dist", "cli.mjs");
+  if (!fs.existsSync(tsxCli)) {
+    return { ok: false, error: `Could not find tsx at ${tsxCli}. Run "npm install" in the mvp folder.` };
+  }
+
+  child = spawn(process.execPath, [tsxCli, ...args], {
     cwd: MVP_DIR,
-    shell: true, // needed for npx resolution on Windows
-    env: { ...process.env, FORCE_COLOR: "0" },
+    shell: false,
+    env: { ...process.env, FORCE_COLOR: "0", ELECTRON_RUN_AS_NODE: "1" },
   });
 
   const onChunk = (buf) => {
