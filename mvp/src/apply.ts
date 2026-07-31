@@ -1763,9 +1763,9 @@ const NEXT_RE = /^(next|continue|save (and|&) continue|save (and|&) next)$/i;
 const SUBMIT_RE = /submit|finish|send application|complete application/i;
 // Never clicked either - these abandon or reset the flow.
 const ABORT_RE = /^(cancel|discard|back|end session|sign out|log ?out|start over)$/i;
-// Bot-detection. Seeing any of these is a hard stop, never something to
-// work around.
-const CAPTCHA_RE = /captcha|recaptcha|hcaptcha|are you a human|verify you are human|i'm not a robot/i;
+// Bot-detection is a hard stop, never something to work around - but what
+// counts as one lives in detectCaptcha() below, which requires a challenge
+// that's actually rendered for a human rather than any mention of the word.
 // A code emailed/texted to the candidate. Unreachable programmatically -
 // the tool has no access to the inbox, and shouldn't.
 const VERIFICATION_CODE_RE = /verification code|one-?time (code|password|pin)|\bOTP\b|enter the code|code we (sent|emailed)|security code/i;
@@ -1901,10 +1901,48 @@ async function readValidationErrors(page: Page): Promise<string[]> {
 
 /** True if the page currently shows a CAPTCHA / bot challenge. */
 async function detectCaptcha(page: Page): Promise<boolean> {
-  const frameHit = page.frames().some((f) => /hcaptcha|recaptcha|captcha/i.test(f.url()));
-  if (frameHit) return true;
+  // Only a challenge a HUMAN must actually solve counts. The presence of a
+  // CAPTCHA frame does not: Google's invisible reCAPTCHA loads a background
+  // frame on essentially every Greenhouse-embedded form, scoring the session
+  // passively with nothing rendered to solve. Treating that as a stop
+  // aborted a real run before a single field was filled, on a form that had
+  // 31 perfectly fillable fields - and would have done the same on the
+  // platform this tool has been tested against most.
+  //
+  // An invisible reCAPTCHA can escalate to a real challenge on submit, but
+  // this tool never submits; and if one is escalated mid-flow, it becomes a
+  // visibly-rendered widget, which is exactly what the check below catches.
+  const visibleChallenge = await page
+    .evaluate(() => {
+      const nodes = Array.from(
+        document.querySelectorAll(
+          'iframe[src*="captcha" i], iframe[title*="captcha" i], .g-recaptcha, .h-captcha, [class*="captcha" i], [id*="captcha" i]'
+        )
+      );
+      return nodes.some((el) => {
+        const r = el.getBoundingClientRect();
+        // A real challenge occupies meaningful space. Invisible reCAPTCHA's
+        // anchor iframe is 0x0 or a tiny badge; a checkbox widget is ~300x75
+        // and an image grid is far larger.
+        if (r.width < 100 || r.height < 40) return false;
+        const cs = getComputedStyle(el);
+        return cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) > 0.1;
+      });
+    })
+    .catch(() => false);
+  if (visibleChallenge) return true;
+
+  // Text explicitly asking the user to prove they're human. Deliberately
+  // narrower than the frame check it replaces - a page merely containing
+  // the word "reCAPTCHA" (every Greenhouse form does, in its privacy
+  // footer) is not a challenge.
   return page
-    .evaluate((src) => new RegExp(src, "i").test(document.body.innerText || ""), CAPTCHA_RE.source)
+    .evaluate(
+      () =>
+        /are you a human|verify you are human|i'm not a robot|complete the captcha|prove you.{0,10}re human/i.test(
+          document.body.innerText || ""
+        )
+    )
     .catch(() => false);
 }
 
