@@ -14,27 +14,20 @@
 
     <section class="form">
       <label class="field">
-        <span>Job posting or career page URL</span>
+        <span>Paste a link &mdash; a job posting or a careers page, either works</span>
         <input id="url" type="text" placeholder="https://..." spellcheck="false" />
-      </label>
-
-      <div class="kind">
-        <label><input type="radio" name="kind" value="job" checked /> A single job posting</label>
-        <label><input type="radio" name="kind" value="board" /> A career board <em>(uses criteria.json)</em></label>
-      </div>
-
-      <label class="field">
-        <span>Resume</span>
-        <div class="row">
-          <input id="resume" type="text" placeholder="No file selected" readonly />
-          <button id="pick" class="ghost">Browse…</button>
-        </div>
       </label>
 
       <div class="actions">
         <button id="run" class="primary">Run</button>
         <button id="stop" class="ghost" disabled>Stop</button>
         <span id="status" class="status">Idle</span>
+      </div>
+
+      <div class="settingRow">
+        <span class="lbl">Resume template</span>
+        <span id="resume" class="val">…</span>
+        <button id="pick" class="ghost small">Change…</button>
       </div>
     </section>
 

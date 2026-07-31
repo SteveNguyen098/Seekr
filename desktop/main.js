@@ -13,6 +13,33 @@ const fs = require("node:fs");
 
 const MVP_DIR = path.resolve(__dirname, "..", "mvp");
 
+// The resume template is configuration, not a per-run input: the whole
+// point of a template is that it's chosen once and reused for every
+// application. Persisted outside the repo, in Electron's userData dir.
+const DEFAULT_TEMPLATE = path.resolve(__dirname, "..", "Seekr Resume Template.docx");
+let settingsPath = null;
+let settings = { resume: "" };
+
+function loadSettings() {
+  settingsPath = path.join(app.getPath("userData"), "settings.json");
+  try {
+    settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsPath, "utf-8")) };
+  } catch {
+    /* first run - fall through to the default below */
+  }
+  if (!settings.resume || !fs.existsSync(settings.resume)) {
+    settings.resume = fs.existsSync(DEFAULT_TEMPLATE) ? DEFAULT_TEMPLATE : "";
+  }
+}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  } catch {
+    /* non-fatal: the app still works, it just won't remember next launch */
+  }
+}
+
 let win = null;
 let child = null;
 
@@ -28,7 +55,10 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  loadSettings();
+  createWindow();
+});
 app.on("window-all-closed", () => {
   if (child) child.kill();
   if (process.platform !== "darwin") app.quit();
@@ -36,13 +66,18 @@ app.on("window-all-closed", () => {
 
 // ---- dialogs -------------------------------------------------------------
 
+ipcMain.handle("get-settings", async () => ({ ...settings, defaultTemplate: DEFAULT_TEMPLATE }));
+
 ipcMain.handle("pick-resume", async () => {
   const r = await dialog.showOpenDialog(win, {
-    title: "Select your resume",
+    title: "Choose your resume template",
     filters: [{ name: "Resume", extensions: ["docx", "txt"] }],
     properties: ["openFile"],
   });
-  return r.canceled ? null : r.filePaths[0];
+  if (r.canceled) return null;
+  settings.resume = r.filePaths[0];
+  saveSettings();
+  return settings.resume;
 });
 
 ipcMain.handle("open-path", async (_e, p) => {
@@ -63,13 +98,16 @@ ipcMain.handle("run", async (_e, opts) => {
   const jsonOut = path.join(os.tmpdir(), `seekr-run-${Date.now()}.json`);
   const outDir = opts.outDir || path.join(MVP_DIR, "out", "desktop");
 
-  const args = ["src/index.ts"];
-  if (opts.urlKind === "job") {
-    args.push("--job-url", opts.url);
-  } else {
-    args.push("--career-url", opts.url, "--criteria", "./criteria.json");
+  const resume = settings.resume;
+  if (!resume || !fs.existsSync(resume)) {
+    return { ok: false, error: "No resume template set. Use Change… to pick one." };
   }
-  args.push("--resume", opts.resume, "--out", outDir, "--json-out", jsonOut);
+
+  // --url lets the CLI classify the link itself, so the UI doesn't have to
+  // ask which kind it is. --criteria is harmless when the link turns out to
+  // be a single posting (it's only consulted for board runs).
+  const args = ["src/index.ts", "--url", opts.url, "--criteria", "./criteria.json"];
+  args.push("--resume", resume, "--out", outDir, "--json-out", jsonOut);
   if (opts.headed !== false) args.push("--headed");
 
   send("run-started", { command: `npx tsx ${args.join(" ")}` });

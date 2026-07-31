@@ -15,24 +15,32 @@ function appendLog(text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function showResume(p) {
+  const el = $("resume");
+  el.textContent = p || "none set — click Change…";
+  el.classList.toggle("missing", !p);
+  el.title = p || "";
+}
+
+// The resume template is remembered between launches, so the link is the
+// only thing to fill in per run.
+window.seekr.getSettings().then((s) => showResume(s.resume));
+
 $("pick").addEventListener("click", async () => {
   const p = await window.seekr.pickResume();
-  if (p) $("resume").value = p;
+  if (p) showResume(p);
 });
 
 $("run").addEventListener("click", async () => {
   const url = $("url").value.trim();
-  const resume = $("resume").value.trim();
-  if (!url) return alert("Enter a job posting or career page URL.");
-  if (!resume) return alert("Choose a resume file.");
+  if (!url) return alert("Paste a job posting or careers page link.");
 
   logEl.textContent = "";
   $("results").classList.add("hidden");
   $("pause").classList.add("hidden");
   setRunning(true);
 
-  const urlKind = document.querySelector('input[name="kind"]:checked').value;
-  const res = await window.seekr.run({ url, resume, urlKind, headed: true });
+  const res = await window.seekr.run({ url, headed: true });
   if (!res.ok) {
     appendLog(`\n[shell] ${res.error}\n`);
     setRunning(false);

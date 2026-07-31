@@ -49,6 +49,18 @@ button:disabled { opacity: .45; cursor: default; }
 .ghost { background: var(--panel2); color: var(--text); border-color: var(--line); }
 .actions { display: flex; align-items: center; gap: 10px; }
 .status { color: var(--dim); font-size: 12px; margin-left: 4px; }
+.small { padding: 5px 11px; font-size: 12px; }
+.settingRow {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--dim);
+}
+.settingRow .lbl { flex: 0 0 auto; }
+.settingRow .val {
+  flex: 1; color: var(--text); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.settingRow .val.missing { color: #fca5a5; }
 
 .pause { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-color: var(--warn); }
 .pause p { margin: 4px 0 0; color: var(--dim); font-size: 13px; }

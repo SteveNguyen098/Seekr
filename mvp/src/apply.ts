@@ -194,9 +194,24 @@ export async function openApplicationForm(page: Page, jobUrl: string): Promise<v
   await page.goto(jobUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
     page.goto(jobUrl, { waitUntil: "load", timeout: 30000 })
   );
-  const applyBtn = await page.$("a:has-text('Apply'), button:has-text('Apply')");
-  if (applyBtn) {
-    await applyBtn.click();
+  // Pick the first *visible* Apply control, not merely the first match.
+  // page.$() returns whatever comes first in the DOM regardless of
+  // visibility, and career sites routinely carry hidden duplicates (a
+  // collapsed mobile menu, an off-screen nav, a footer link). Clicking one
+  // of those blocks until Playwright's 30s actionability timeout and then
+  // throws - which previously propagated all the way out and killed the
+  // entire run before a single field was touched.
+  //
+  // The click is also best-effort now: plenty of pages put the form on the
+  // job page itself, so failing to find or click an Apply button is not
+  // grounds for aborting. Field discovery below is the real test of whether
+  // we got somewhere useful.
+  const applyCandidates = await page.$$("a:has-text('Apply'), button:has-text('Apply'), [role=button]:has-text('Apply')");
+  for (const candidate of applyCandidates) {
+    const usable = await candidate.isVisible().then((v) => v && candidate.isEnabled()).catch(() => false);
+    if (!usable) continue;
+    const clicked = await candidate.click({ timeout: 5000 }).then(() => true).catch(() => false);
+    if (clicked) break;
   }
   // Wait for the actual application form to mount rather than a fixed
   // delay. Native Greenhouse/Lever pages render almost immediately, but

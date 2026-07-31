@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("seekr", {
+  getSettings: () => ipcRenderer.invoke("get-settings"),
   pickResume: () => ipcRenderer.invoke("pick-resume"),
   openPath: (p) => ipcRenderer.invoke("open-path", p),
   run: (opts) => ipcRenderer.invoke("run", opts),

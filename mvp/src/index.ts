@@ -5,7 +5,7 @@ import readline from "node:readline/promises";
 import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { loadResume } from "./resume.js";
-import { listJobs, getJobDescription } from "./scrape.js";
+import { listJobs, getJobDescription, classifyUrl } from "./scrape.js";
 import { filterByTitle, filterByLocation, passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
 import { rankJobs, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
@@ -60,14 +60,18 @@ interface CriteriaFile {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const jobUrl = args["job-url"];
-if (!args["resume"] || (!jobUrl && (!args["career-url"] || (!args["criteria"] && !args["titles"])))) usageAndExit();
+// --url lets a caller hand over a link without knowing which kind it is;
+// it's classified against the live page below and routed accordingly.
+const ambiguousUrl = args["url"];
+let jobUrl = args["job-url"];
+if (!args["resume"] || (!jobUrl && !ambiguousUrl && (!args["career-url"] || (!args["criteria"] && !args["titles"]))))
+  usageAndExit();
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ANTHROPIC_API_KEY is not set. Add it to a .env file (see .env.example).");
   process.exit(1);
 }
 
-const careerUrl = args["career-url"];
+let careerUrl = args["career-url"];
 const resumePath = args["resume"];
 const outDir = path.resolve(args["out"] || "./out");
 const MAX_CANDIDATES_TO_INSPECT = 8;
@@ -135,6 +139,21 @@ if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications 
 const browser = { close: () => context.close() };
 
 try {
+  // Work out what kind of link this is, so the caller doesn't have to.
+  if (ambiguousUrl) {
+    console.log(`\nInspecting the link...`);
+    const verdict = await classifyUrl(page, ambiguousUrl);
+    if (verdict.kind === "unknown") {
+      console.log(`  -> This doesn't look like a job posting or a careers page (${verdict.reason}).`);
+      console.log(`     Nothing was run. Check the link and try again.`);
+      await browser.close();
+      process.exit(0);
+    }
+    console.log(`  -> ${verdict.kind === "job" ? "a single job posting" : "a careers/listings page"} (${verdict.reason})`);
+    if (verdict.kind === "job") jobUrl = ambiguousUrl;
+    else careerUrl = ambiguousUrl;
+  }
+
   let best: { job: CandidateJob; score: number; reasoning: string };
 
   if (jobUrl) {

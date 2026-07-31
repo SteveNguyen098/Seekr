@@ -82,6 +82,70 @@ export async function listJobs(page: Page, careerUrl: string): Promise<JobPostin
   return jobs;
 }
 
+/**
+ * Decides whether a URL is a single job posting or a listings/career page,
+ * so a UI can just take a link instead of asking the user to classify it.
+ *
+ * Structure first, URL patterns second. A page carrying many posting-shaped
+ * links is a board; one carrying an Apply control and a long block of prose
+ * is a posting. URL shape alone is unreliable - plenty of boards sit at
+ * /careers/jobs and plenty of postings sit at /careers/<slug> - so it's only
+ * consulted to break a tie.
+ *
+ * Returns "unknown" when neither signal fires, which callers should treat as
+ * "this may not be a job page at all" rather than silently guessing.
+ */
+export async function classifyUrl(
+  page: Page,
+  url: string
+): Promise<{ kind: "job" | "board" | "unknown"; reason: string }> {
+  const ok = await page
+    .goto(url, { waitUntil: "networkidle", timeout: 30000 })
+    .then(() => true)
+    .catch(() =>
+      page
+        .goto(url, { waitUntil: "load", timeout: 30000 })
+        .then(() => true)
+        .catch(() => false)
+    );
+  if (!ok) return { kind: "unknown", reason: "the page could not be loaded" };
+
+  // Boards on SPA platforms render their listings after load.
+  await page.waitForTimeout(2500);
+
+  const signals = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll("a[href]"));
+    const postingLike = links.filter((a) => {
+      const href = (a as HTMLAnchorElement).href;
+      // Path names the concept: /jobs/x, /careers/x, /vacancy/x ...
+      if (/\/(jobs?|careers?|vacanc(y|ies)|positions?|openings?|postings?)\/[^/?#]{2,}/i.test(href)) return true;
+      // ...or the link ends in an opaque posting id. Ashby uses
+      // /<company>/<uuid> with no such word anywhere in the path, and
+      // Greenhouse-style boards use long numeric ids, so neither is caught
+      // by the pattern above.
+      return /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(href) || /\/\d{6,}(?:[/?#]|$)/.test(href);
+    });
+    const uniq = new Set(postingLike.map((a) => (a as HTMLAnchorElement).href.split(/[?#]/)[0]));
+    const text = document.body.innerText || "";
+    return {
+      postingLinks: uniq.size,
+      hasApply: /\bapply\b/i.test(text),
+      hasForm: !!document.querySelector("input[type=file], form input[type=email]"),
+      textLength: text.length,
+    };
+  });
+
+  // A board's defining feature is many distinct posting links.
+  if (signals.postingLinks >= 5) return { kind: "board", reason: `found ${signals.postingLinks} job links` };
+  // A posting: an apply affordance (or a form) plus a substantial description.
+  if ((signals.hasApply || signals.hasForm) && signals.textLength > 1200)
+    return { kind: "job", reason: "has an apply action and a full description" };
+  if (signals.postingLinks >= 2) return { kind: "board", reason: `found ${signals.postingLinks} job links` };
+  if (/[?&](gh_jid|jid|jobId|requisitionId)=|\/(job|vacancy|posting)\/\d/i.test(url))
+    return { kind: "job", reason: "URL identifies a specific posting" };
+  return { kind: "unknown", reason: "no job listings or application form found on this page" };
+}
+
 export async function getJobDescription(
   page: Page,
   jobUrl: string
