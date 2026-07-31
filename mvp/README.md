@@ -272,6 +272,12 @@ names withheld - these are real employers' live sites, not test fixtures):
 - **Ashby** (`jobs.ashbyhq.com/<company>`) - 1 board; a fourth platform -
   its own EEOC radio groups and Yes/No screening-question button pairs
   each surfaced their own distinct shape, see Known limitations.
+- **Oracle HCM Cloud** (Oracle Recruiting / "Candidate Experience") - 1
+  posting; a fifth platform and the hardest so far. It's the first with a
+  genuine anti-bot honeypot, the first multi-page application, and the
+  first requiring an emailed verification code. **Partially working** -
+  see the Oracle-specific bullets under Known limitations for exactly how
+  far it gets and where it currently stops.
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
@@ -500,6 +506,73 @@ this was caught and fixed during testing).
   attempt to solve or bypass these (and never should) - it's a hard stop
   that requires a human. Not every ATS/company site will be automatable
   for this reason.
+- **Anti-bot honeypot fields are detected and left empty.** A real Oracle
+  HCM Cloud application carries one, and it defeats every standard
+  visibility check: Playwright's `isVisible()`, the DOM's
+  `checkVisibility()`, computed `display`/`visibility`/`opacity`,
+  zero-size, and off-screen position all report it as an ordinary visible
+  199x38 input. It hides via a `height:0; overflow:hidden` **ancestor**, so
+  its own box is perfectly normal. The signal that actually separates it
+  from legitimately-hidden-but-real controls is `aria-hidden="true"`,
+  backed by a name/id match and a fill-time hit-test. That hit-test must
+  be **self-or-descendant**: the topmost element at the honeypot's own
+  centre is its *ancestor*, so accepting an ancestor match reports the trap
+  as perfectly reachable - which is exactly how the first version of this
+  guard silently passed it.
+  Controls whose `aria-labelledby` resolves to a *visible* partner are
+  exempted before that hit-test runs, and the ordering is load-bearing: a
+  required consent checkbox and a whole platform's radio/checkbox controls
+  are `0x0` by design, and reversing the order skips them and dead-ends the
+  form. Inconclusive verdicts never skip - a real field vanishing from a
+  fill is invisible in a report, so the guard fails open and flags a
+  `0x0`-with-no-visible-partner field as a note instead.
+- **Multi-page applications are supported** - the filler loops
+  fill -> find Next/Continue -> click -> confirm the step actually
+  advanced -> re-discover, capping at 10 pages with a screenshot per page.
+  Submit is never clicked; the loop simply exits when only a submit
+  control remains. "Advanced" is judged by comparing the *identity* of the
+  form controls on the page, not a snapshot of its text: a failed Next
+  injects validation-error text, which changes the text but not the step,
+  and an earlier text-based check read that as progress and re-filled the
+  same page until the page cap.
+- **A verification code pauses the run rather than failing it.** Oracle
+  HCM Cloud (and platforms like it) email a one-time code instead of
+  requiring an account. In `--headed` mode the run pauses so you can type
+  the code in the browser and press Enter to continue, with a timeout so
+  an unattended run can't hang; headless runs exit cleanly, since nobody's
+  there to enter it. **Confirmed working**, though the run currently still
+  ends shortly after resuming - see the next bullet.
+- **Oracle HCM Cloud is partially working, and stops after the
+  verification step.** Confirmed working: cookie rejection, the honeypot
+  and an unrelated AI-assistant widget both correctly skipped, email
+  filled, the required "I acknowledge the Privacy Policy..." consent
+  checkbox ticked, Next advancing to the verification screen, and the
+  headed pause. After the code is entered and the run resumes, it does not
+  yet continue through the remaining pages - most likely because the
+  control on the following step isn't matched by the Next/Continue
+  vocabulary. This is the next thing to fix and is genuinely unexplored:
+  no page past verification has been reached yet.
+- **A click that toggles a control must be verified, not assumed.** The
+  same false-positive class as the file-upload and text-fill checks:
+  `checkField()` used to return success whenever its click resolved
+  without throwing, and was measured returning `true` while the checkbox
+  stayed unchecked. Every strategy is now judged by re-reading `.checked`.
+  Strategy *order* matters too, and for a non-obvious reason: clicking a
+  control's associated label is unsafe when that label contains
+  hyperlinks. A real consent label ("I acknowledge the Privacy Policy
+  and, as applicable, California Notice" - both links) swallowed the click
+  and opened a full-screen policy modal, which then covered the form's
+  Next button and stalled the whole run with no visible error. The
+  targeted click on the input itself now runs first; the label click runs
+  last and is skipped entirely when the label contains a link.
+- **A persistent browser profile keeps verification from repeating.** A
+  throwaway browser context each run means every employer sees a brand-new
+  anonymous browser, so an emailed verification has to be redone every
+  time. `--profile <dir>` (default `./.browser-profile`, gitignored) keeps
+  cookies and local storage between runs so a verification you complete
+  once is remembered. This is an ordinary browser profile on your own
+  machine, not a way around the check - the first verification is still
+  done by hand. `--no-profile true` restores the old behaviour.
 - Cover letter upload is not generated/attached.
 - Resume parsing supports `.docx` and `.txt` only (no `.pdf` yet).
 - Field discovery relies on labels being programmatically associated with

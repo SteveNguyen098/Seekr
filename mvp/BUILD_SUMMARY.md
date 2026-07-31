@@ -369,6 +369,72 @@ sequence, without closing the dropdown between clicks — multi-select
 widgets stay open across selections instead of closing after the first
 pick like a single-select does.
 
+**The invisible-field guard, and why every obvious approach failed.** An
+Oracle HCM Cloud application carries a genuine anti-bot honeypot. It was
+worth measuring rather than reasoning about, because it defeats every
+standard check: Playwright's `isVisible()` → true, the DOM's
+`checkVisibility()` → true, computed `display`/`visibility`/`opacity` →
+`inline-block`/`visible`/`1`, size → a normal `199x38`, position →
+on-screen. It hides via a `height:0; overflow:hidden` **ancestor**, leaving
+its own box entirely ordinary. The measured truth table that drove the
+design:
+
+| field | `aria-hidden` | `aria-labelledby`→visible | rect | correct action |
+|---|---|---|---|---|
+| honeypot | **true** | — | 199x38 | **skip** |
+| required consent checkbox | — | **yes** | 0x0 | **tick** |
+| another platform's SMS radios | — | **yes** | 0x0 | **click** |
+| ordinary email input | — | — | 620x38 | **fill** |
+
+`aria-hidden` is the only signal separating row 1 from rows 2–3, so it's
+the backbone; a hit-test via `elementFromPoint` is a backstop, and the
+`aria-labelledby`→visible exemption must run **before** it or rows 2–3 get
+skipped — which would dead-end the form, since that consent checkbox gates
+page 1. Two details are load-bearing and each broke a first attempt:
+the hit-test must accept only **self-or-descendant** (the honeypot's
+topmost element at its own centre is its *ancestor*, so allowing an
+ancestor match reports the trap as reachable), and reachability is
+evaluated at **fill time**, not discovery time, since it's the only
+position-dependent signal and a re-render or page transition invalidates a
+stale verdict. Inconclusive verdicts never skip: a real field silently
+vanishing from a fill is invisible in a report, whereas a novel trap
+slipping past is still caught by the static rules. A `0x0` field with no
+visible label partner is filled but surfaced as a flow note (file inputs
+exempted — that shape is universal for dropzones and would be pure noise).
+
+**Verifying a toggle, and why click *order* matters.** `checkField()` used
+to return true whenever its click resolved without throwing, and was
+measured returning `true` while the checkbox stayed unchecked — the same
+false-positive class as the file-upload and text-fill checks, and one that
+had been quietly affecting every checkbox on every platform. Every strategy
+is now judged by re-reading `.checked`. Ordering then turned out to matter
+for a non-obvious reason. Clicking a control's associated label is unsafe
+when the label contains hyperlinks: a consent label reading "I acknowledge
+the Privacy Policy and, as applicable, California Notice" carries both as
+`<a>` links, so the click opened a full-screen policy modal, which covered
+the form's Next button and stalled the entire run with no error anywhere —
+the checkbox *was* ticked, so nothing looked wrong until the per-page
+screenshot showed a 17,000px-tall page. The targeted native click on the
+input itself now runs first (it cannot hit anything else, and was measured
+as the only thing that toggles an Oracle JET checkbox at all — clicking the
+covering span or the wrapping label does nothing); the label click runs last
+and is skipped entirely when the label contains a link.
+
+**Multi-page flow.** `fillCurrentPage()` handles one step; `fillApplication()`
+loops fill → find Next → click → confirm advance → re-discover, capped at 10
+pages with a screenshot each. `NEXT_RE` is anchored (an unanchored
+`/continue/` would hit Oracle's session-keepalive "Continue Working"), and
+submit/abort controls are never clicked. Advance is judged by comparing the
+**identity** of the page's form controls, not a text snapshot: a failed Next
+injects validation-error text, which changes the text but not the step, and
+the original text-based check read that as progress and re-filled the same
+page until the cap. A stall now reports the page's own validation text.
+`dismissBlockingOverlay()` closes an interloper modal before each Next —
+carefully, because Oracle renders the application form *itself* inside an
+`oj-dialog`, so "a large dialog is open" is not evidence of an interloper
+and an early version would have torn down the form mid-run; an
+informational overlay is identified by containing no form controls at all.
+
 **Deciding what to do with each field**, in order:
 1. **Resume file upload** — matched by "resume"/"cv" appearing in the
    field's id, name, `data-testid`, or label (not hardcoded to one ATS's
@@ -841,6 +907,7 @@ identified by its ATS and what made it a useful test case:
 | Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
 | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
 | Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
+| Oracle HCM Cloud | Fifth ATS platform and the hardest so far — **partially working**. First platform with a real anti-bot honeypot, first multi-page application, first requiring an emailed verification code, and the source of a false-positive in `checkField()` that had been silently affecting every checkbox on every platform. Gets through cookie rejection, honeypot/AI-widget skipping, email, the required consent checkbox, and the verification pause; does not yet continue past the verification step |
 
 Confirmed working across these runs:
 - Scraping a real career page and finding every open posting.
@@ -891,6 +958,14 @@ Confirmed working across these runs:
 - **Bot detection can be a hard blocker.** One Lever-hosted test site's
   form presented a CAPTCHA challenge partway through the run. The tool can't
   and won't attempt to solve it.
+- **The multi-page loop has not been driven past a verification step.**
+  On Oracle HCM Cloud it reaches the emailed-code screen, pauses correctly
+  in `--headed` mode, and resumes when the code is entered — but the run
+  then ends rather than continuing through the remaining pages, most
+  likely because the following step's control isn't matched by the
+  Next/Continue vocabulary. Everything past verification is genuinely
+  unexplored: no page beyond it has ever been reached, so the pagination
+  logic is still only proven across a single real transition.
 - **Cover letters aren't handled at all** — no generation, no upload.
 - **No automated test suite.** Verification so far has been live manual
   runs and reading the screenshot/console output, not unit/integration
