@@ -114,8 +114,25 @@ const contextLoaded = [
 console.log(`  -> personal context loaded: ${contextLoaded.length ? contextLoaded.join(", ") : "none found (contact/screening-question fields will be left blank)"}`);
 
 const headed = args["headed"] === "true";
-const browser = await chromium.launch({ headless: !headed });
-const page = await browser.newPage();
+// Persistent browser profile. A fresh context every run means every
+// employer sees a brand-new anonymous browser, so any email/identity
+// verification has to be repeated each time. Reusing one on-disk profile
+// keeps cookies and local storage between runs, so a verification you
+// complete once (e.g. an emailed code on an Oracle HCM Cloud tenant) is
+// remembered on later runs against that same employer. It's an ordinary
+// browser profile on your own machine - the same thing a real browser
+// keeps - not a way around any check: the first verification still has to
+// be done by hand.
+// Disable with --no-profile to get the old throwaway-context behaviour.
+const useProfile = args["no-profile"] !== "true";
+const profileDir = path.resolve(args["profile"] || "./.browser-profile");
+const context = useProfile
+  ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 } })
+  : await (await chromium.launch({ headless: !headed })).newContext({ viewport: { width: 1280, height: 900 } });
+const page = context.pages()[0] ?? (await context.newPage());
+if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications persist between runs)`);
+// Closing the context also closes its browser in both modes.
+const browser = { close: () => context.close() };
 
 try {
   let best: { job: CandidateJob; score: number; reasoning: string };

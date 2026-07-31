@@ -1158,7 +1158,7 @@ async function fillTextVerified(
 }
 
 /** Fills every field on the currently-displayed page/step of a form. */
-async function fillCurrentPage(
+export async function fillCurrentPage(
   page: Page,
   anthropic: Anthropic,
   resume: Resume,
@@ -1742,7 +1742,7 @@ const VERIFICATION_CODE_RE = /verification code|one-?time (code|password|pin)|\b
 const MAX_PAGES = 10;
 
 /** Clicks "Reject All Non-Essential" (or the closest decline) on a cookie banner. */
-async function dismissCookieBanner(page: Page): Promise<string | null> {
+export async function dismissCookieBanner(page: Page): Promise<string | null> {
   const candidates = [
     /^reject all non-?essential/i,
     /^reject all/i,

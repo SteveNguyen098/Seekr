@@ -6,5 +6,5 @@ out/
 user_profile.txt
 qa_context.txt
 work_auth_context.txt
-node_modules/
 *.bat
+.browser-profile/
