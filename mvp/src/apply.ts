@@ -144,13 +144,29 @@ const AI_POLICY_CANDIDATES = ["No"];
 const CONSENT_BROADER_SCOPE_RE =
   /marketing|third[- ]part(y|ies)|share\b.*(partner|affiliate|vendor)|indefinite(ly)?|unrelated purpose|advertis/i;
 const CONSENT_AGREE_CANDIDATES = ["Yes", "I agree", "I consent", "Accept", "Agree", "Acknowledge", "Confirm"];
-function isStandardRecruitmentConsent(label: string): boolean {
+export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
   // category (a required data-processing acknowledgement) even without
   // mentioning "personal data" or "recruitment" by name - short-circuit
   // past the stricter check below, which they'd otherwise fail.
   if (/privacy notice.*acknowledg|acknowledg.*privacy notice/i.test(label)) return true;
+  // "I acknowledge the Privacy Policy and, as applicable, California Notice"
+  // - a real, required Oracle HCM Cloud checkbox that gates the first page
+  // of the application. The narrower pattern above only covered "privacy
+  // NOTICE" and only in acknowledgement-noun form, so this label fell all
+  // the way through to the generic "left for the user" checkbox bucket and
+  // was never ticked. Two independent tests rather than one long regex, so
+  // it also covers "I agree to the Privacy Policy" / "Accept the Data
+  // Protection Statement" phrasings. Still gated by the broader-scope
+  // exclusion at the top of this function, so a label that also drags in
+  // marketing or third-party sharing is still (correctly) left alone.
+  if (
+    /\b(acknowledge|acknowledged|acknowledgement|acknowledgment|agree|accept)\b/i.test(label) &&
+    /\b(privacy|data protection|gdpr)\s+(policy|notice|statement)\b/i.test(label)
+  ) {
+    return true;
+  }
   // Same category again, but for a label that's just the bare policy name
   // with no "consent"/"acknowledge"/"process" wording at all (e.g. a real
   // OneTrust field labeled exactly "Data Protection Notice"). Confirmed
@@ -1703,6 +1719,45 @@ async function findNextControl(page: Page) {
   return null;
 }
 
+/**
+ * A structural signature of the form controls currently on the page, used
+ * to decide whether clicking Next actually advanced the flow.
+ *
+ * Deliberately identity-based (tag/id/name/type of every control) rather
+ * than a snapshot of body text. A text-based fingerprint false-positives on
+ * exactly the case that matters most: a failed Next injects validation-error
+ * text into the page, which changes the text but not the step - so the loop
+ * concluded it had advanced and re-filled the same page until the page cap.
+ * Field identity doesn't move when an error message appears, but does change
+ * completely on a real step transition.
+ */
+async function pageFieldSignature(page: Page): Promise<string> {
+  return page
+    .evaluate(() =>
+      Array.from(document.querySelectorAll("input:not([type=hidden]), textarea, select"))
+        .map((e) => `${e.tagName}:${e.id || e.getAttribute("name") || ""}:${(e as HTMLInputElement).type || ""}`)
+        .sort()
+        .join("|")
+    )
+    .catch(() => "");
+}
+
+/** Visible validation/error text the form is showing right now. */
+async function readValidationErrors(page: Page): Promise<string[]> {
+  return page
+    .evaluate(() => {
+      const sel = '[role="alert"], [aria-invalid="true"], .oj-messaging-inline-container, [class*="error-message"], [class*="ErrorMessage"]';
+      return [
+        ...new Set(
+          Array.from(document.querySelectorAll(sel))
+            .map((e) => (e.textContent || "").replace(/\s+/g, " ").trim())
+            .filter((t) => t.length > 2 && t.length < 200)
+        ),
+      ].slice(0, 5);
+    })
+    .catch(() => [] as string[]);
+}
+
 /** True if the page currently shows a CAPTCHA / bot challenge. */
 async function detectCaptcha(page: Page): Promise<boolean> {
   const frameHit = page.frames().some((f) => /hcaptcha|recaptcha|captcha/i.test(f.url()));
@@ -1784,25 +1839,25 @@ export async function fillApplication(
     }
 
     const urlBefore = page.url();
-    const fingerprintBefore = await page
-      .evaluate(() => `${document.querySelectorAll("input,textarea,select").length}:${(document.body.innerText || "").slice(0, 400)}`)
-      .catch(() => "");
+    const signatureBefore = await pageFieldSignature(page);
     await next.handle.click({ timeout: 5000 }).catch(() => {});
     await delay(3500);
 
     const urlAfter = page.url();
-    const fingerprintAfter = await page
-      .evaluate(() => `${document.querySelectorAll("input,textarea,select").length}:${(document.body.innerText || "").slice(0, 400)}`)
-      .catch(() => "");
+    const signatureAfter = await pageFieldSignature(page);
 
-    if (urlAfter === urlBefore && fingerprintAfter === fingerprintBefore) {
+    if (urlAfter === urlBefore && signatureAfter === signatureBefore) {
       // Didn't advance. Overwhelmingly this means client-side validation
-      // rejected the step, so name the fields most likely responsible
-      // instead of retrying blindly or reporting a bare failure.
+      // rejected the step, so surface the page's own error text - that
+      // names the actual blocker far better than guessing from our own
+      // skip list, which only knows what *we* declined to fill.
+      const errors = await readValidationErrors(page);
       const blockers = skipped.filter((s) => s.required).map((s) => s.label);
       notes.push(
-        `STOPPED on page ${pageNum}: clicked "${next.text}" but the page didn't advance - almost certainly required fields still needing input.` +
-          (blockers.length ? ` Most likely: ${blockers.join("; ")}.` : ` No required field was flagged, so check the page for a validation message.`)
+        `STOPPED on page ${pageNum}: clicked "${next.text}" but the page didn't advance - almost certainly required input still missing.` +
+          (errors.length ? ` Page reported: ${errors.map((e) => `"${e}"`).join("; ")}.` : "") +
+          (blockers.length ? ` Required fields left unfilled: ${blockers.join("; ")}.` : "") +
+          (!errors.length && !blockers.length ? ` No validation text or unfilled required field found - check the screenshot.` : "")
       );
       break;
     }
