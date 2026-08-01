@@ -179,6 +179,18 @@ export function isStandardRecruitmentConsent(label: string): boolean {
   // in discoverFields()), so the end anchor must tolerate trailing
   // whitespace/asterisks, not just whitespace.
   if (/^(the\s+)?(data protection|privacy|gdpr)\s+(notice|policy)(\s+acknowledg\w*)?[\s*]*$/i.test(label.trim())) return true;
+  // Consent to store/process the answers given to the EEO/demographic
+  // survey on this same form. Narrow by construction - it covers only the
+  // responses just provided (which are "prefer not to say" by default,
+  // since those questions are always declined) and is scoped to this
+  // application. The broader-scope exclusion above still runs first, so a
+  // version of this that also grabbed marketing rights is left alone.
+  if (
+    /\b(demographic|self.?identif\w*|eeo|diversity)\b/i.test(label) &&
+    /\b(consent|agree|acknowledge|authorize)\b/i.test(label)
+  ) {
+    return true;
+  }
   if (!/consent|process(ing)? of (your |my )?(personal )?data|data processing/i.test(label)) return false;
   return /(process|collect|store|use)(ing|ed)?\b[^.]*(personal (data|information))|personal (data|information)[^.]*(process|collect|store|use)|recruit(ment|ing)?/i.test(
     label
@@ -472,9 +484,20 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
 
         let skipAlways = false;
         let skipReason = "";
-        if (ariaHiddenAttr || honeypotNamed) {
+        if (honeypotNamed) {
           skipAlways = true;
           skipReason = "hidden anti-bot (honeypot) field - deliberately left empty";
+        } else if (ariaHiddenAttr) {
+          // Both are correctly skipped, but they are not the same thing and
+          // shouldn't read as if they were. aria-hidden overwhelmingly marks
+          // a widget's own internal plumbing - react-select, for instance,
+          // renders a hidden duplicate input purely to carry required-field
+          // validation, so a single visible combobox yields two discovered
+          // fields. Reporting those as "anti-bot honeypot" is alarming and
+          // wrong; the honeypot label is now reserved for controls actually
+          // named like one.
+          skipAlways = true;
+          skipReason = "hidden from assistive tech (aria-hidden) - not a user-facing field";
         } else if (inAiWidget) {
           skipAlways = true;
           skipReason = "part of the page's AI-assistant widget, not the application form";
@@ -975,6 +998,34 @@ const SALARY_OPEN_ENDED_RE = /salary (requirement|expectation)|desired (salary|c
 const JD_HAS_SALARY_RE = /\$\s?\d{2,3}(,\d{3})+|\$\s?\d{2,3}\s?[kK]\b|\$\s?\d{2,3}[,.]?\d{0,3}\s*(-|–|to)\s*\$?\s?\d{2,3}[,.]?\d{0,3}\s?[kK]?/;
 
 /**
+ * The job description as sent to Claude. Truncating to a fixed prefix is
+ * necessary (descriptions run long and most of the tail is boilerplate), but
+ * a plain slice can cut off the one detail a question depends on.
+ *
+ * Measured: a real posting stated "Compensation $58,000—$65,000 USD" at
+ * character 4157 of a 5213-character description, i.e. 157 characters past
+ * the 4000-char cutoff. Claude never saw it, so a "compensation
+ * requirements" question fell through to a trained-knowledge guess that
+ * didn't match the posting - while the code was simultaneously (and
+ * correctly) skipping live salary research on the grounds that the
+ * description already stated a figure. The two behaviours only make sense
+ * together if the figure actually reaches the prompt.
+ *
+ * So: keep the prefix, and if a salary appears beyond it, append that
+ * excerpt rather than widening the cutoff for every job.
+ */
+const JD_PROMPT_LIMIT = 4000;
+function jdForPrompt(jobDescription: string): string {
+  const head = jobDescription.slice(0, JD_PROMPT_LIMIT);
+  const tail = jobDescription.slice(JD_PROMPT_LIMIT);
+  const m = tail.match(JD_HAS_SALARY_RE);
+  if (!m || m.index === undefined) return head;
+  const from = Math.max(0, m.index - 220);
+  const excerpt = tail.slice(from, m.index + 220).replace(/\s+/g, " ").trim();
+  return `${head}\n\n[Compensation details stated later in this posting: ...${excerpt}...]`;
+}
+
+/**
  * A candidate's own instruction: for open-ended salary questions, look up
  * real current market data rather than relying only on Claude's trained
  * knowledge (which can be stale). Kept as its own small call, separate from
@@ -1045,7 +1096,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -1119,7 +1170,7 @@ async function answerMultiSelectFallback(
     messages: [
       {
         role: "user",
-        content: `These are required "select all that apply" fields on a job application. You were already asked twice for a full list of matching values and left them empty both times, which isn't allowed - the application can't be submitted with a required field blank. This time, just give the SINGLE most defensible option for each instead of a full list - a partial answer is far better than none, and every field below must get a real, non-empty value.\n\nResume:\n${resume.text}\n\nJob description:\n${jobDescription.slice(0, 4000)}\n\n${contextBlocks}\n\n${fieldsBlock}`,
+        content: `These are required "select all that apply" fields on a job application. You were already asked twice for a full list of matching values and left them empty both times, which isn't allowed - the application can't be submitted with a required field blank. This time, just give the SINGLE most defensible option for each instead of a full list - a partial answer is far better than none, and every field below must get a real, non-empty value.\n\nResume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -1259,7 +1310,14 @@ export async function fillCurrentPage(
     // reversing the order would block every such control before anything
     // could rescue it, including a required consent checkbox that gates
     // page 1 of a real multi-page flow.
-    if (!field.hasVisibleLabelPartner) {
+    // File inputs are exempt: setInputFiles() writes to the element's file
+    // list directly and never needs it to be clickable, so reachability is
+    // simply not a relevant question for them. Measured cost of not having
+    // this: a real Greenhouse attach input renders 1x1 under a styled
+    // dropzone div, so the hit-test correctly reported "blocked" and the
+    // guard silently dropped the resume upload - the single most important
+    // field on the form.
+    if (!field.hasVisibleLabelPartner && field.type !== "file") {
       const reach = await reachability(formCtx, field.selector);
       if (reach === "blocked") {
         skipped.push({

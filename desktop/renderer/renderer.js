@@ -69,7 +69,7 @@ window.seekr.on("run-awaiting-input", (line) => {
   // "close the browser" prompt, since only the former needs explaining.
   const isFinal = /close the browser/i.test(line || "");
   $("pauseMsg").textContent = isFinal
-    ? "The run is finished and the browser is still open for you to review and submit by hand. Click Continue to close it."
+    ? "The run is finished and the browser is still open for you to review and submit by hand. Click Continue to apply."
     : "The application is asking for a verification code. Enter it in the browser window that's open, then click Continue.";
   $("pause").classList.remove("hidden");
   $("status").textContent = "Waiting for you…";
