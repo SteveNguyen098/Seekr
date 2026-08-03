@@ -329,9 +329,13 @@ names withheld - these are real employers' live sites, not test fixtures):
 - **Oracle HCM Cloud** (Oracle Recruiting / "Candidate Experience") - 1
   posting; a fifth platform and the hardest so far. It's the first with a
   genuine anti-bot honeypot, the first multi-page application, and the
-  first requiring an emailed verification code. **Partially working** -
-  see the Oracle-specific bullets under Known limitations for exactly how
-  far it gets and where it currently stops.
+  first requiring an emailed verification code. **Confirmed live reaching
+  page 6** of a real application - résumé tailored and upload attempted,
+  cookie/consent/honeypot handling all correct, verification pause/resume
+  working end-to-end - but **still incomplete**: several required
+  questions aren't discovered at all, and the multi-page loop wastes real
+  work re-processing already-filled fields. See the Oracle-specific
+  bullets under Known limitations for the exact, honest breakdown.
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
@@ -659,18 +663,57 @@ this was caught and fixed during testing).
   requiring an account. In `--headed` mode the run pauses so you can type
   the code in the browser and press Enter to continue, with a timeout so
   an unattended run can't hang; headless runs exit cleanly, since nobody's
-  there to enter it. **Confirmed working**, though the run currently still
-  ends shortly after resuming - see the next bullet.
-- **Oracle HCM Cloud is partially working, and stops after the
-  verification step.** Confirmed working: cookie rejection, the honeypot
-  and an unrelated AI-assistant widget both correctly skipped, email
-  filled, the required "I acknowledge the Privacy Policy..." consent
-  checkbox ticked, Next advancing to the verification screen, and the
-  headed pause. After the code is entered and the run resumes, it does not
-  yet continue through the remaining pages - most likely because the
-  control on the following step isn't matched by the Next/Continue
-  vocabulary. This is the next thing to fix and is genuinely unexplored:
-  no page past verification has been reached yet.
+  there to enter it.
+  **A real run exposed a serious bug in this before it ever worked right:
+  the pause was filling the page before checking whether it needed to
+  pause at all.** The six "enter verification code digit N of six" boxes
+  were discovered as ordinary required fields, and since Claude obviously
+  can't know a code emailed to a human, the "required fields must never
+  come back empty" rule forced an answer anyway - it typed `0` into all
+  six, confirmed live via the printed report and the saved screenshot. By
+  the time the pause appeared asking for the real code, every box was
+  already full, so the code had nowhere to go, Verify failed, and the run
+  ended having quietly sabotaged the exact step it stopped to wait for.
+  Fixed three ways: the verification check now runs *before* filling, so
+  the boxes stay untouched; any field matching a code-input pattern is
+  also skipped by its own label regardless of the page-level check, as a
+  second line of defense in case the wording check ever misses a variant;
+  and the advance button on that screen reads "VERIFY," not
+  "Next"/"Continue," which the button vocabulary didn't originally
+  include (verified safe: "Verify and Submit" is still correctly refused,
+  "Send New Code" still isn't clicked).
+- **Confirmed live: a run now gets deep into a real, multi-page Oracle
+  HCM Cloud application - six pages, not one.** Tailored résumé generated
+  and its upload attempted, cookies/consent/honeypot all handled
+  correctly, and the verification pause → resume → advance sequence
+  working end-to-end for the first time. This surfaced three genuine gaps,
+  none of them a wrong answer - just fields the tool never got the chance
+  to see or handle efficiently, because no page this deep had ever been
+  reached before:
+  - **Yes/No questions rendered as plain `<button>` pairs with no backing
+    form-control element at all** (work authorization, visa sponsorship,
+    and several "minimum requirement" questions, all required) are
+    invisible to `discoverFields()`, which only queries
+    `input, textarea, select, [role=combobox]`. They don't show up as
+    skipped-with-a-reason - they don't show up at all, since there's
+    nothing there to discover. Not yet fixed.
+  - **Oracle keeps every completed page's fields sitting in the DOM as
+    later pages load**, so per-page re-discovery finds and re-attempts
+    all of them again on every subsequent page - hugely inflating runtime
+    and producing a wall of duplicate "failed to fill" entries for fields
+    that were, in fact, already filled correctly earlier in the run. Not
+    yet fixed; needs tracking already-filled selectors across the whole
+    run, not just within one page.
+  - **EEOC questions rendered as a dropdown** (Gender, Veteran Status)
+    didn't find a decline option on this platform, unlike the identical
+    question shape already proven working elsewhere - root cause not yet
+    diagnosed, since it needs the real harvested option list from a live
+    page, which requires a human to get past the verification screen
+    first.
+  - A "Work and Education History" question presented as a two-column
+    repeating timeline (Work / Education entered in parallel) is a UI
+    pattern not seen anywhere else in this project and hasn't been
+    analyzed yet.
 - **A click that toggles a control must be verified, not assumed.** The
   same false-positive class as the file-upload and text-fill checks:
   `checkField()` used to return success whenever its click resolved

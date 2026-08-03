@@ -458,6 +458,71 @@ carefully, because Oracle renders the application form *itself* inside an
 and an early version would have torn down the form mid-run; an
 informational overlay is identified by containing no form controls at all.
 
+**The verification pause was filling the page before checking whether it
+needed to pause — a bug that silently sabotaged the exact step it existed
+for.** A real run's own report gave this away: all six "enter verification
+code digit N of six" boxes contained `0`. The loop was filling each page
+*before* checking whether that page was a verification screen, so the six
+boxes were discovered as ordinary required fields; Claude obviously can't
+know a code emailed to a human, but the "required fields must never come
+back empty" rule forced an answer anyway. By the time the pause fired and
+asked for the real code, every box was already full — the code the
+candidate typed had nowhere to land, Verify failed, and the run ended one
+step short of the real application, every time, for reasons that had
+nothing to do with the pages themselves. Three fixes: the verification
+check now runs before `fillCurrentPage()`, not after, so the boxes are
+left genuinely untouched; `VERIFICATION_FIELD_RE` skips any field matching
+a code-input label on its own, independent of the page-level check, as a
+second line of defense against a wording variant the page-level regex
+might miss; and `NEXT_RE` now includes `"verify"` — the screen's only
+control reads VERIFY, not Next/Continue, so even a correctly-entered code
+previously went nowhere. Safe by construction: `SUBMIT_RE` is still
+checked first, so a hypothetical "Verify and Submit" button is still
+refused, and "Send New Code" doesn't match either.
+
+**Confirmed live once this was fixed: a run reached page 6 of a real
+Oracle HCM Cloud application** — the deepest any multi-page run has gone,
+and the first time the pause → resume → advance sequence has been proven
+end-to-end rather than just reasoned about. It surfaced three further
+gaps, each a real limitation rather than a wrong answer, all only visible
+once a page this deep was actually reached:
+- **Yes/No questions with no backing form-control element at all.**
+  Confirmed live: work authorization, visa sponsorship, and several
+  "minimum requirement" questions render as a bare pair of `<button>`
+  elements with nothing behind them — no hidden `<input>`, no
+  `role="combobox"`. `discoverFields()`'s query
+  (`input, textarea, select, [role=combobox]`) finds nothing there at
+  all, so these required questions don't appear in the report as skipped
+  — they simply never existed as far as the tool could tell. This is a
+  different shape from the Ashby choice-button pattern documented above,
+  which anchors on a real (if hidden) `<input>` and harvests its sibling
+  buttons; here there may be nothing to anchor on at all, which is why
+  this needs its own investigation rather than reusing that mechanism
+  as-is.
+- **Completed pages stay in the DOM as later pages load.** Field
+  selectors like a first-name or address input recurred identically
+  across pages 3 through 6 in one run's report, each one reported as
+  "failed to fill" on the later pages despite having filled correctly
+  the first time. The per-page re-discovery in the multi-page loop has no
+  memory of what it already handled on a prior page, so it re-attempts
+  every previously-filled field again on every subsequent page — the
+  direct cause of both the long runtime and a report several times larger
+  than the real number of distinct fields on the form. Fix is to track
+  filled selectors across the whole run (`filledSelectors` already exists
+  for the text-reverification pass within one page - this needs the
+  equivalent across pages), not re-derive from scratch each time.
+- **EEOC questions rendered as a dropdown** (Gender, Veteran Status)
+  reported "no decline option found" on this platform, where the
+  identical select/combobox-shaped question already works correctly
+  elsewhere (see `SENSITIVE_RE`/`DECLINE_RE` handling above). Not yet
+  diagnosed, because diagnosing it means reading the real harvested
+  option list `harvestComboboxOptions()` saw for these specific fields —
+  which requires a live page past the verification gate, i.e. a human's
+  hands-on run, not something reproducible in isolation.
+- A "Work and Education History" field presented as two parallel
+  repeating timeline columns (Work / Education) is a UI shape not seen on
+  any other platform tested so far and hasn't been analyzed at all yet.
+
 **Bot detection, and a false positive that aborted a real run before it
 started.** `detectCaptcha()` runs each page through the multi-page loop and
 hard-stops if it fires — a genuine, by-design "a human has to take over
@@ -1075,7 +1140,7 @@ identified by its ATS and what made it a useful test case:
 | Greenhouse | Regression check; also the source of a real how-did-you-hear regex gap |
 | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
 | Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
-| Oracle HCM Cloud | Fifth ATS platform and the hardest so far — **partially working**. First platform with a real anti-bot honeypot, first multi-page application, first requiring an emailed verification code, and the source of a false-positive in `checkField()` that had been silently affecting every checkbox on every platform. Gets through cookie rejection, honeypot/AI-widget skipping, email, the required consent checkbox, and the verification pause; does not yet continue past the verification step |
+| Oracle HCM Cloud | Fifth ATS platform and the hardest so far — **confirmed live reaching page 6 of a real application, still incomplete**. First platform with a real anti-bot honeypot, first genuinely multi-page application (six real pages, not one), first requiring an emailed verification code, and the source of a false-positive in `checkField()` that had been silently affecting every checkbox on every platform. A run correctly handled cookies/consent/honeypot, tailored and attempted to attach a résumé, and worked through the full pause → resume → advance verification sequence for the first time — but also exposed a serious bug where the code-entry boxes were being pre-filled with `0` before the pause even ran (fixed), plus three still-open gaps once real depth was finally reached: Yes/No questions rendered as bare `<button>` pairs with no backing form control are invisible to discovery entirely, completed pages stay in the DOM so later pages redundantly re-process them, and dropdown-shaped EEOC questions aren't finding their decline option on this platform |
 | Greenhouse (embedded directly on the company's own job page, no iframe) | The first application, via either the CLI or the desktop app, filled correctly end-to-end and left ready to submit: 21 fields across identity/contact, the JD-stated compensation range, work authorization, EEOC/demographic questions (declined), consent, and the résumé attachment itself. Getting here surfaced and fixed a run-crashing Apply-button bug, a CAPTCHA false-positive that would have hard-stopped this exact platform, a résumé-upload regression from the invisible-field guard above, an `aria-hidden`-vs-honeypot mislabeling, and the salary-truncation bug also described under `apply.ts` |
 
 Confirmed working across these runs:
@@ -1132,14 +1197,18 @@ Confirmed working across these runs:
 - **Bot detection can be a hard blocker.** One Lever-hosted test site's
   form presented a CAPTCHA challenge partway through the run. The tool can't
   and won't attempt to solve it.
-- **The multi-page loop has not been driven past a verification step.**
-  On Oracle HCM Cloud it reaches the emailed-code screen, pauses correctly
-  in `--headed` mode, and resumes when the code is entered — but the run
-  then ends rather than continuing through the remaining pages, most
-  likely because the following step's control isn't matched by the
-  Next/Continue vocabulary. Everything past verification is genuinely
-  unexplored: no page beyond it has ever been reached, so the pagination
-  logic is still only proven across a single real transition.
+- **The multi-page loop now reaches page 6 of a real Oracle HCM Cloud
+  application, confirmed live, but is not yet complete.** A verification
+  pre-fill bug that sabotaged the code-entry step (see `apply.ts` above)
+  is fixed, and the pause → resume → advance sequence works end-to-end.
+  What's left, all diagnosed but not yet fixed: Yes/No questions with no
+  backing form-control element aren't discovered at all; completed pages
+  stay in the DOM so later pages redundantly re-process every
+  already-filled field, inflating both runtime and the report; and
+  dropdown-shaped EEOC questions aren't finding their decline option on
+  this specific platform. A two-column work/education timeline field
+  hasn't been analyzed at all. None of this has ever been reachable
+  before now, so all four are freshly discovered, not long-standing gaps.
 - **Cover letters aren't handled at all** — no generation, no upload.
 - **No automated test suite.** Verification so far has been live manual
   runs and reading the screenshot/console output, not unit/integration
