@@ -51,7 +51,13 @@ resume, find one matching job and fill out its application form.
    GDPR-style labels with no "consent"/"acknowledge" wording at all (e.g.
    a real Greenhouse-hosted field labeled exactly "Data Protection Notice") - its
    only real option was `Acknowledge/Confirm`, mechanically identical to
-   the "process my personal data" case, just EU-style phrasing.
+   the "process my personal data" case, just EU-style phrasing. Also covers
+   consent to *store* the answers just given to an EEOC/demographic survey
+   on the same form (e.g. "By checking this box, I consent to \[company]
+   collecting, storing, and processing my responses to the demographic data
+   surveys above") - narrow by construction, since those answers are always
+   "prefer not to say" by the time this runs and the consent is scoped to
+   this one application, not a blanket data-sharing agreement.
 7. A handful of specific questions get fixed, deterministic answers rather
    than an LLM guess, so there's no risk of a fabricated personal story:
    - "AI policy for interviewers/applicants" style questions → "No".
@@ -243,6 +249,15 @@ npx tsx src/index.ts \
   --criteria "./criteria.json"
 ```
 
+- `--url`: a link that could be *either* a single job posting or a career
+  page - `classifyUrl()` inspects the live page and routes it to whichever
+  of `--job-url`/`--career-url` below actually applies, so the caller
+  doesn't have to know which kind of link they have. Prints its verdict and
+  why (e.g. "a single job posting (has an apply action and a full
+  description)"); an unrecognized link runs nothing rather than guessing.
+  This is what the desktop app always uses.
+- `--job-url`: skip scraping/filtering/ranking and apply directly to one
+  already-known posting.
 - `--career-url`: a company's career/job-listings page.
 - `--resume`: path to a `.docx` or `.txt` resume.
 - `--criteria`: path to a JSON profile with target titles and screening
@@ -257,14 +272,53 @@ npx tsx src/index.ts \
 - `--headed` (optional): launch a visible browser window instead of running
   headless, so you can watch it work and submit manually at the end.
 
+## Desktop app (optional UI)
+
+`../desktop` is a minimal Electron shell around this same CLI - a UI
+wrapper, not a reimplementation. It spawns `src/index.ts` exactly as a
+terminal would and streams its output into a window; no scraping,
+filtering, tailoring, or form-filling logic lives in `desktop/` or is
+duplicated there. Delete that folder and the CLI still works identically.
+
+What it adds on top of the CLI:
+- **One field, not several**: paste a link and hit Run. `--url` auto-detection
+  (above) means there's no job/board choice to make.
+- **The resume template is remembered**, not re-selected every run -
+  persisted in Electron's own settings storage, defaulting to
+  `Seekr Resume Template.docx` next to the repo. A template is meant to be
+  chosen once and reused, so it's configuration, not a per-run input.
+- **Results render in the window** - the matched job, filled/skipped
+  fields (tagged AI-generated / low-confidence / required), flow notes, and
+  links to open each page's screenshot - read from an optional
+  `--json-out <path>` flag on the CLI that writes a machine-readable copy of
+  the same report already being printed. Console output is unchanged and
+  nothing behaves differently when the flag is absent.
+- **The verification-code pause works with no code changes**: the CLI
+  blocks on stdin waiting for Enter, so the shell watches for that prompt,
+  shows a Continue button, and writes a newline when clicked - precisely
+  what pressing Enter in a terminal does.
+
+Launch: double-click the `Seekr` shortcut (or `desktop/Seekr.vbs` directly)
+for normal use, no terminal. `desktop/dev.bat` runs `electronmon` for
+hot-reload while iterating on the UI.
+
+**Playwright still opens its own separate browser window** - it is not
+embedded inside the app window. Embedding it is a larger piece of future
+work, not this wrapper.
+
 ## Verified against (live, as of this writing)
 
 Tested against real, live job postings on four ATS platforms (company
 names withheld - these are real employers' live sites, not test fixtures):
 
-- **Greenhouse** (`job-boards.greenhouse.io/<company>`) - 6 boards, including
-  one embedded via iframe on the hiring company's own branded domain (see
-  Known limitations for what that surfaced).
+- **Greenhouse** (`job-boards.greenhouse.io/<company>`) - 7 boards, including
+  two embedded on the hiring company's own branded domain (one via a
+  cross-origin iframe, one directly on the job page itself) - see Known
+  limitations for what those surfaced. One of these was the first run,
+  through either the CLI or the desktop app, to reach a real 21-field
+  application and fill it correctly end-to-end: identity/contact fields,
+  the stated compensation range, work authorization and demographic
+  questions, consent, and the résumé upload itself.
 - **Lever** (`jobs.lever.co/<company>`) - 1 board.
 - **Rippling ATS** (`ats.rippling.com/<company>`) - 1 board; a third
   platform, structurally different from Greenhouse/Lever in ways that
@@ -345,6 +399,29 @@ this was caught and fixed during testing).
   completely unlabeled fields gets a chance to find the real question text
   instead - confirmed both fields now resolve their real labels and answer
   correctly.
+- **A stated salary has to actually reach the prompt to be used.** The job
+  description is truncated to a fixed prefix before being sent to Claude
+  (descriptions run long and most of the tail is boilerplate) - but a plain
+  slice can cut off the one detail a question depends on. Confirmed live: a
+  posting stated "Compensation $58,000-$65,000 USD" 157 characters past the
+  cutoff, so Claude never saw it and answered from trained knowledge
+  instead - while the code was simultaneously and correctly skipping live
+  salary research on the grounds that the posting already stated a figure.
+  Those two behaviors only make sense together if the figure actually
+  reaches the prompt. `jdForPrompt()` keeps the same prefix length but
+  appends a short excerpt around any salary figure found beyond it, rather
+  than widening the cutoff for every job.
+- **A link doesn't need to be pre-classified as a job posting or a career
+  page.** `classifyUrl()` inspects the live page - many posting-shaped
+  links (matched both by URL vocabulary like `/jobs/`, `/careers/` and by
+  opaque id shape, since some platforms use `/<company>/<uuid>` with no
+  such word anywhere in the path) means a board; an apply action plus a
+  substantial description means a posting. Structure wins over URL
+  patterns, which are unreliable on their own - plenty of boards live at
+  `/careers/jobs` and plenty of single postings at `/careers/<slug>`. An
+  unrecognized link is reported plainly and nothing is run, rather than
+  guessing. This is what `--url` (and the desktop app, which always uses
+  it) is built on.
 - **Live salary research.** Open-ended "what are your salary
   requirements?" questions now get a real web search for current market
   data (via the Anthropic SDK's hosted web-search tool) rather than relying
@@ -506,6 +583,34 @@ this was caught and fixed during testing).
   attempt to solve or bypass these (and never should) - it's a hard stop
   that requires a human. Not every ATS/company site will be automatable
   for this reason.
+- **Only a CAPTCHA a human can actually see is treated as that hard stop -
+  not merely the presence of one.** The multi-page loop's own CAPTCHA check
+  originally fired on any frame whose URL contained "captcha," which
+  includes Google's *invisible* reCAPTCHA - a background frame present on
+  essentially every Greenhouse-embedded form, scoring the session passively
+  with nothing rendered to solve. Because the check runs before filling, a
+  real run aborted with zero fields filled on a form that had 31 perfectly
+  fillable ones. Detection now requires an element of meaningful size
+  (≥100×40 - an invisible reCAPTCHA's anchor iframe is `0x0` or a small
+  badge, a real checkbox widget is ~300×75) that isn't hidden/transparent,
+  or text that genuinely asks the user to prove they're human (not just any
+  page mentioning the word "reCAPTCHA," as every Greenhouse privacy footer
+  does). The underlying promise is unchanged - it still never attempts to
+  solve or bypass anything, and an escalation to a real challenge mid-flow
+  renders a visible widget, which the size check still catches. Verified
+  both directions: the Greenhouse form above no longer stops, and Google's
+  own reCAPTCHA demo page - a genuine visible challenge - still does.
+- **A hidden "Apply" button used to abort the entire run.** Opening the
+  application form picked whichever element matched `a/button:has-text
+  ('Apply')` first, regardless of visibility - and career sites routinely
+  carry hidden duplicates (a collapsed mobile menu, off-screen nav).
+  Clicking one blocked for Playwright's full 30-second actionability
+  timeout and then threw an exception nothing caught, crashing the process
+  before a single field was touched. It now picks the first *visible*,
+  enabled candidate with a short timeout, and treats the click as
+  best-effort rather than required - plenty of forms sit directly on the
+  job page with nothing to click at all, which field discovery below is
+  the real test of, not a successful Apply click.
 - **Anti-bot honeypot fields are detected and left empty.** A real Oracle
   HCM Cloud application carries one, and it defeats every standard
   visibility check: Playwright's `isVisible()`, the DOM's
@@ -526,6 +631,20 @@ this was caught and fixed during testing).
   form. Inconclusive verdicts never skip - a real field vanishing from a
   fill is invisible in a report, so the guard fails open and flags a
   `0x0`-with-no-visible-partner field as a note instead.
+  Two follow-on fixes, both from a run that reached a real 21-field
+  application: (1) **file inputs are now exempt from the reachability check
+  entirely**, not merely from the note above - a Greenhouse résumé-attach
+  input renders `1x1` under a styled dropzone, so the hit-test correctly
+  said "blocked" and silently dropped the résumé upload, the single most
+  important field on the form; `setInputFiles()` writes to the element
+  directly and was never a reachability question to begin with. (2) `aria-
+  hidden` and "named like a honeypot" are now reported as the distinct
+  signals they are, instead of both saying "anti-bot honeypot" - the former
+  overwhelmingly turns out to be a widget's own internal plumbing (a
+  react-select-style combobox renders a hidden duplicate input purely to
+  carry required-field validation, so one visible dropdown yields two
+  discovered fields), and calling that a security trap was both alarming
+  and wrong. Both are still correctly skipped; only the report changed.
 - **Multi-page applications are supported** - the filler loops
   fill -> find Next/Continue -> click -> confirm the step actually
   advanced -> re-discover, capping at 10 pages with a screenshot per page.

@@ -400,7 +400,30 @@ stale verdict. Inconclusive verdicts never skip: a real field silently
 vanishing from a fill is invisible in a report, whereas a novel trap
 slipping past is still caught by the static rules. A `0x0` field with no
 visible label partner is filled but surfaced as a flow note (file inputs
-exempted — that shape is universal for dropzones and would be pure noise).
+exempted from the *note* — that shape is universal for dropzones and would
+be pure noise).
+
+Two follow-on fixes surfaced by a run that finally reached a real 21-field
+application and needed to be right, not just safe. First: file inputs
+needed a stronger exemption than the note above — they were still subject
+to the reachability *check itself*, and a real Greenhouse résumé-attach
+input renders `1x1` beneath a styled dropzone `div`. The hit-test correctly
+reported "blocked," and the guard silently dropped the résumé upload — the
+single most important field on the form, failing exactly the way the whole
+guard exists to prevent (a real field vanishing with no error). Fixed by
+exempting `type === "file"` from reachability entirely: `setInputFiles()`
+writes to the element's file list directly and was never a meaningful
+reachability question. Second: `aria-hidden` and "named like a honeypot"
+were both being reported as `"hidden anti-bot (honeypot) field"`, which is
+alarming and, for most of the fields it fired on, simply false —
+`aria-hidden` overwhelmingly marks a widget's own internal plumbing rather
+than a trap (a react-select-style combobox renders a hidden duplicate
+`<input>` purely to carry required-field validation, so one visible
+dropdown yields two discovered fields). The two are now reported as the
+distinct signals they are — `honeypotNamed` keeps the honeypot wording,
+bare `aria-hidden` gets `"hidden from assistive tech (aria-hidden) - not a
+user-facing field"` — with no change to which fields are skipped, only to
+what the report claims about why.
 
 **Verifying a toggle, and why click *order* matters.** `checkField()` used
 to return true whenever its click resolved without throwing, and was
@@ -434,6 +457,46 @@ carefully, because Oracle renders the application form *itself* inside an
 `oj-dialog`, so "a large dialog is open" is not evidence of an interloper
 and an early version would have torn down the form mid-run; an
 informational overlay is identified by containing no form controls at all.
+
+**Bot detection, and a false positive that aborted a real run before it
+started.** `detectCaptcha()` runs each page through the multi-page loop and
+hard-stops if it fires — a genuine, by-design "a human has to take over
+from here," never something to work around. The first version fired if
+*any* frame on the page had "captcha" in its URL, which is true of Google's
+*invisible* reCAPTCHA — a background frame present on essentially every
+Greenhouse-embedded form, scoring the session passively with nothing
+rendered for a human to solve. Because the check runs before any filling
+happens, a real run aborted with zero fields filled on a form that had 31
+perfectly fillable ones — on the platform this tool has been tested against
+the most, not some edge case. Detection now requires an element of
+meaningful size (`≥100x40` — an invisible reCAPTCHA's anchor iframe
+measures `0x0` or a small badge; a real checkbox challenge is `~300x75`)
+that isn't `display:none`/`visibility:hidden`/near-zero-opacity, or text
+that explicitly asks the user to prove they're human — not just any page
+mentioning the word "reCAPTCHA," which every Greenhouse privacy footer
+does. The safety property is unchanged: still never attempts to solve or
+bypass anything, and an invisible reCAPTCHA escalating to a real challenge
+mid-flow renders a visible widget, which the size check still catches.
+Verified both directions live: the Greenhouse form above no longer stops
+and discovers all 31 fields, while Google's own reCAPTCHA demo page — a
+genuine visible challenge — still hard-stops.
+
+**Opening the form used to be able to crash the entire process.**
+`openApplicationForm()` picked whichever element matched
+`a/button:has-text('Apply')` first via `page.$()`, which returns the first
+DOM match regardless of visibility — and career sites routinely carry
+hidden duplicates (a collapsed mobile menu, off-screen nav). Clicking one
+blocked for Playwright's full 30-second actionability timeout and then
+threw, which propagated all the way out of the async pipeline and killed
+the whole run before a single field was discovered — on a page that, once
+actually reached, had the entire application form sitting right there with
+no click needed at all. Fixed by iterating every match with `page.$$()`
+and picking the first genuinely `isVisible() && isEnabled()` candidate,
+with a short 5-second timeout instead of the default 30. The click is also
+now explicitly best-effort rather than something a failure aborts on: many
+forms live directly on the job page, so a missing or unclickable Apply
+button isn't evidence of anything wrong — field discovery immediately
+after is the real test of whether the run has somewhere useful to be.
 
 **Deciding what to do with each field**, in order:
 1. **Resume file upload** — matched by "resume"/"cv" appearing in the
@@ -480,6 +543,20 @@ informational overlay is identified by containing no form controls at all.
    in `discoverFields()`) — an end-anchored regex that only allowed
    trailing whitespace missed the real field entirely on the first attempt
    at this fix.
+   A further extension covers consent to *store* the answers just given to
+   an EEOC/demographic survey elsewhere on the same form — a real field
+   read `"By checking this box, I consent to [Company] collecting, storing,
+   and processing my responses to the demographic data surveys above."`
+   Matched by an "EEO/demographic noun" (`demographic|self-identif\w*|eeo|
+   diversity`) alongside a "consent verb" (`consent|agree|acknowledge|
+   authorize`), gated by the same broader-scope exclusion first. Narrow by
+   construction, not just by regex: the answers being consented to are
+   always "prefer not to say," since those questions are declined
+   unconditionally elsewhere in this same function, and the consent is
+   scoped to this one application rather than a blanket data-sharing
+   agreement. Verified against adversarial variants that also grab
+   marketing or third-party-sharing language — those still correctly fail
+   and are left alone.
 3. **"Yes/No" choice-button questions** (work authorization, visa
    sponsorship) — answered via Claude, not skipped. Confirmed live on a
    real Ashby-hosted application form that these don't use a real
@@ -619,6 +696,26 @@ informational overlay is identified by containing no form controls at all.
    marked `[MULTI-SELECT]` and answered via a separate `values` array in
    the tool schema instead of the single `value` field everything else
    uses.
+
+   **A stated salary has to actually reach the prompt to be used, and a
+   plain truncation can silently cut it off.** The job description is
+   sliced to a fixed 4,000-character prefix before being sent to Claude —
+   descriptions run long and most of the tail is boilerplate — but a real
+   posting stated `"Compensation $58,000-$65,000 USD"` at character 4,157
+   of a 5,213-character description: 157 characters past the cutoff. Claude
+   answered the open-ended salary question from trained knowledge instead
+   (`$50,000-$60,000`, correctly flagged low-confidence, but not what the
+   posting said), while the surrounding logic was *simultaneously and
+   correctly* skipping live salary research on the grounds that the JD
+   already stated a figure (`JD_HAS_SALARY_RE`, checked against the full
+   text, not the truncated prompt). Those two behaviors only cohere if the
+   figure the code detected is the same one the model actually sees.
+   `jdForPrompt()` keeps the same prefix length — widening it for every job
+   just to cover the rare one with a late salary mention isn't worth the
+   extra tokens on every other run — and instead searches the truncated
+   tail specifically for `JD_HAS_SALARY_RE`, appending a ~440-character
+   excerpt around the match when found. Verified live: the plain slice
+   doesn't contain `"$58,000"`; the function's output does.
 
 **The required-field retry.** The "never come back empty" instruction is a
 prompt, not an enforced constraint — Claude doesn't always comply. After
@@ -878,16 +975,87 @@ pulled from the parsed resume rather than hardcoded, saved into the same
 
 ### 7. Tying it together — [`src/index.ts`](src/index.ts)
 
-The CLI entrypoint. Parses command-line flags (`--career-url`, `--resume`,
+The CLI entrypoint. Parses command-line flags (`--url` for a link of
+unknown type, or `--career-url`/`--job-url` for a known one; `--resume`,
 `--criteria`, and per-field overrides for everything `criteria.json`
-covers, plus `--out` and `--headed`), loads the resume and personal
-context, runs the steps above in order, and prints a readable log:
-what it scraped, what it filtered out and why, how it scored each
-candidate, and a three-way breakdown of what it filled — ground-truth
-(resume/profile), AI-generated (review it), and low-confidence (review it
-*especially* carefully) — plus a required-vs-optional breakdown of
-everything it left blank. It never calls anything resembling a "submit"
-action; there's no code path that could do that even by accident.
+covers, plus `--out`, `--headed`, `--json-out`, and `--profile`/
+`--no-profile`), loads the resume and personal context, runs the steps
+above in order, and prints a readable log: what it scraped, what it
+filtered out and why, how it scored each candidate, and a three-way
+breakdown of what it filled — ground-truth (resume/profile), AI-generated
+(review it), and low-confidence (review it *especially* carefully) — plus
+a required-vs-optional breakdown of everything it left blank. It never
+calls anything resembling a "submit" action; there's no code path that
+could do that even by accident.
+
+When `--url` is given, `classifyUrl()` (in `src/scrape.ts`) loads the page
+and inspects its structure before anything else runs: many posting-shaped
+links (matched by URL vocabulary like `/jobs/`/`/careers/`, and separately
+by opaque id shape — some platforms use `/<company>/<uuid>` with no such
+word anywhere in the path) means a career board; an apply action plus a
+substantial description means a single posting. Structure is checked
+first and URL shape only breaks a tie, because URL patterns alone are
+unreliable — plenty of boards live at `/careers/jobs` and plenty of single
+postings at `/careers/<slug>`. An unrecognized link is reported plainly
+and nothing runs, rather than guessing and burning an API call on a page
+that was never a job listing at all.
+
+### 8. The desktop app — [`../desktop`](../desktop)
+
+A minimal Electron shell around the same CLI above — a UI wrapper, not a
+reimplementation. `desktop/main.js` spawns `src/index.ts` as a child
+process exactly as a terminal would and streams its stdout/stderr into a
+window; no scraping, filtering, tailoring, or filling logic lives in
+`desktop/` or is duplicated there. Delete the folder and the CLI still
+works identically.
+
+**Spawning it correctly took two tries.** `shell: true` concatenates argv
+into a single command line without escaping, so a résumé path containing
+spaces silently truncated at the first one and the CLI reported
+`"Unsupported resume format"` on a path that was never actually the real
+one. `shell: false` with `"npx.cmd"` isn't a fix either — Node 24 refuses
+to spawn `.cmd` files without a shell (`EINVAL`). The working answer is to
+invoke `tsx`'s resolved `cli.mjs` directly via `process.execPath` (which,
+run inside Electron, *is* Electron's own bundled Node — so this doesn't
+depend on a system Node being installed or on `PATH`) with `shell: false`,
+which passes argv through verbatim. Verified by reading back what the
+child process actually received: the path arrives with every backslash
+and space intact.
+
+**The résumé template is configuration, not a per-run input.** The whole
+point of a template is that it's chosen once and reused, so the desktop
+app persists the chosen path in Electron's own `userData` settings
+storage (defaulting to `Seekr Resume Template.docx` next to the repo if
+present) rather than asking for it on every run — a link is the only
+thing left to type in.
+
+**Results render inside the window** via an additive `--json-out <path>`
+flag on `index.ts`: after printing the same console report as always, it
+optionally writes a machine-readable copy — the matched job, filled and
+skipped fields, screenshots, and flow notes — that the renderer reads back
+once the process exits. Console output doesn't change and nothing behaves
+differently when the flag is absent.
+
+**The verification-code pause needed zero changes to `apply.ts`.** The
+existing pause already blocks on `readline`, waiting for Enter on stdin.
+The shell just watches the child's output for that prompt text, shows a
+Continue button, and writes a newline to the child's stdin when clicked —
+exactly what pressing Enter in a terminal does. It also distinguishes the
+mid-run "a verification code is needed" prompt from the final "the browser
+is still open, close it when ready" prompt, since only the former needs
+an explanation of what to go do in the separate Playwright window first.
+
+**Scope, stated plainly:** Playwright still opens its own browser window,
+entirely separate from the Electron window — embedding it is a real,
+larger piece of future work, not something this wrapper attempts. The GUI
+itself can't be exercised from a sandboxed coding shell with no attached
+desktop (the same limitation headed Playwright runs have); verification
+here has been: confirming Electron boots, both processes' scripts parse,
+rendering the interface with sample data and checking it visually, and
+then several live human test runs that found and fixed real bugs (the
+path-truncation issue above, plus the Apply-button and CAPTCHA
+false-positive fixes documented under `apply.ts`) — the same "measure, don't
+assume" standard as the rest of this codebase.
 
 ## What's actually working (verified with live runs)
 
@@ -908,6 +1076,7 @@ identified by its ATS and what made it a useful test case:
 | Rippling ATS | First third-party platform tested (not Greenhouse/Lever) — surfaced and fixed a real fabricated-demographic-data bug, plus discovery/interaction gaps for `div`-based comboboxes, visually-hidden inputs, and a file-upload false negative |
 | Ashby | Fourth ATS platform — surfaced its own distinct DOM shapes for EEOC radio groups (`fieldset` + direct-child `label`, now auto-declined) and Yes/No screening questions (hidden checkbox + sibling `button` pair), plus a broken `label for=` association that masked a required field's real label *and* its CSS-only asterisk |
 | Oracle HCM Cloud | Fifth ATS platform and the hardest so far — **partially working**. First platform with a real anti-bot honeypot, first multi-page application, first requiring an emailed verification code, and the source of a false-positive in `checkField()` that had been silently affecting every checkbox on every platform. Gets through cookie rejection, honeypot/AI-widget skipping, email, the required consent checkbox, and the verification pause; does not yet continue past the verification step |
+| Greenhouse (embedded directly on the company's own job page, no iframe) | The first application, via either the CLI or the desktop app, filled correctly end-to-end and left ready to submit: 21 fields across identity/contact, the JD-stated compensation range, work authorization, EEOC/demographic questions (declined), consent, and the résumé attachment itself. Getting here surfaced and fixed a run-crashing Apply-button bug, a CAPTCHA false-positive that would have hard-stopped this exact platform, a résumé-upload regression from the invisible-field guard above, an `aria-hidden`-vs-honeypot mislabeling, and the salary-truncation bug also described under `apply.ts` |
 
 Confirmed working across these runs:
 - Scraping a real career page and finding every open posting.
@@ -942,6 +1111,11 @@ Confirmed working across these runs:
 
 - **The generic fallback scraper (non-Greenhouse, non-Lever) is still
   untested against a real site.**
+- **The desktop app isn't a packaged, double-click `.exe` yet** - it's
+  launched via a `.vbs`/shortcut against the repo checkout, and Playwright
+  still opens its own separate browser window rather than one embedded in
+  the app. See `### 8. The desktop app` above for what has and hasn't been
+  exercised.
 - **Multi-select fields were the least reliable field type** — confirmed
   happening intermittently across repeated live runs against the exact
   same field on the exact same form (two consecutive runs against the
@@ -974,9 +1148,6 @@ Confirmed working across these runs:
 - **The years-of-experience, salary, and employment-type filters are all
   regex-based**, not full natural-language understanding. They'll miss
   requirements phrased unusually.
-- **EEOC questions rendered as a radio group** (rather than a dropdown)
-  aren't answered — same safe default of leaving them for manual review,
-  just via a different, not-yet-built code path.
 - **Headed (visible-browser) mode can't be run or tested by the coding
   agent** — the sandboxed shell it runs commands in has no attached
   desktop, so it's structurally unable to open a GUI window. Works fine
@@ -1034,6 +1205,8 @@ Confirmed working across these runs:
 | [`src/resumeGenerator.ts`](src/resumeGenerator.ts) | Detect + tailor bracket+italic `.docx` placeholders, verify page count via Word, save the tailored file |
 | [`scripts/docx-to-pdf.ps1`](scripts/docx-to-pdf.ps1) | PowerShell/Word-COM helper: renders a `.docx` to PDF for the page-count check |
 | [`src/index.ts`](src/index.ts) | CLI entrypoint, wires everything together |
+| [`../desktop/main.js`](../desktop/main.js) | Electron main process: spawns the CLI, streams output, answers the verification-code prompt |
+| [`../desktop/renderer`](../desktop/renderer) | The app window: URL field, Run/Stop, live output, rendered results |
 | [`criteria.json`](criteria.json) | Reusable screening-rules profile (titles, salary floor, locations, etc.) |
 | [`user_profile.txt` / `qa_context.txt` / `work_auth_context.txt`](.) | Gitignored personal context (not committed - create your own) |
 | [`README.md`](README.md) | Setup and run instructions |
