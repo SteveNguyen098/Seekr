@@ -1303,6 +1303,17 @@ export async function fillCurrentPage(
       skipped.push({ label: field.label || field.selector, reason: field.skipReason, required: false });
       continue;
     }
+    // Never type into a verification-code box (see VERIFICATION_FIELD_RE).
+    // Reported as required:false deliberately - it isn't a gap in what the
+    // tool could answer, it's a value only the candidate has.
+    if (VERIFICATION_FIELD_RE.test(field.label)) {
+      skipped.push({
+        label: field.label,
+        reason: "verification code - left blank on purpose so you can enter the real one",
+        required: false,
+      });
+      continue;
+    }
     // Fill-time reachability. Exempt controls whose aria-labelledby points
     // at a visible partner: those are real inputs styled behind a visible
     // clickable surface (checkField handles them) and always fail a
@@ -1816,7 +1827,13 @@ export async function fillCurrentPage(
 // Advance controls. NEXT_RE is anchored: a real Oracle HCM page carries a
 // session-keepalive "Continue Working" button, which an unanchored
 // /continue/ would happily click instead of the real Next.
-const NEXT_RE = /^(next|continue|save (and|&) continue|save (and|&) next)$/i;
+// "verify" is included because an identity/verification step's advance
+// button is labelled that rather than Next - measured on a real Oracle HCM
+// Cloud code screen, where the only control is "VERIFY" and the run
+// therefore ended one step short of the actual application. It is safe to
+// click: verifying an emailed code advances a gate, it never submits an
+// application, and SUBMIT_RE below is still checked first regardless.
+const NEXT_RE = /^(next|continue|save (and|&) continue|save (and|&) next|verify)$/i;
 // Never clicked. The tool has no code path that submits an application.
 const SUBMIT_RE = /submit|finish|send application|complete application/i;
 // Never clicked either - these abandon or reset the flow.
@@ -1827,6 +1844,14 @@ const ABORT_RE = /^(cancel|discard|back|end session|sign out|log ?out|start over
 // A code emailed/texted to the candidate. Unreachable programmatically -
 // the tool has no access to the inbox, and shouldn't.
 const VERIFICATION_CODE_RE = /verification code|one-?time (code|password|pin)|\bOTP\b|enter the code|code we (sent|emailed)|security code/i;
+// An individual input belonging to a verification-code widget, matched on
+// its own label rather than the page's text. A second line of defence: the
+// page-level check above decides when to pause, but if it ever misses a
+// wording variant, this still guarantees no code box is typed into. These
+// are unknowable by definition - the value was emailed to a human - so a
+// "best effort" answer is worse than none, and the required-field rule
+// that normally forbids empty answers must not apply to them.
+const VERIFICATION_FIELD_RE = /verification code|confirmation code|one-?time (code|password|pin)|\bOTP\b|security code|code digit|digit \d+ of/i;
 const MAX_PAGES = 10;
 
 /** Clicks "Reject All Non-Essential" (or the closest decline) on a cookie banner. */
@@ -2040,6 +2065,35 @@ export async function fillApplication(
       break;
     }
 
+    // A code sent to the candidate's inbox/phone: not something this tool
+    // can or should retrieve. Headed runs pause so a human can type it and
+    // let the run continue; headless runs exit cleanly, since nobody's there.
+    //
+    // This MUST be checked before filling, not after. Filling first meant
+    // the six "Enter verification code digit N of six" boxes were treated as
+    // ordinary required fields: Claude can't know a code that was emailed to
+    // a human, but the "required fields never come back empty" rule forced a
+    // value anyway, so it typed 0 into all six. By the time the pause
+    // appeared, the boxes were already full - the real code had nowhere to
+    // go, Verify failed, and the run ended having quietly sabotaged the one
+    // step it was pausing for.
+    const needsCode = await page
+      .evaluate((src) => new RegExp(src, "i").test(document.body.innerText || ""), VERIFICATION_CODE_RE.source)
+      .catch(() => false);
+    if (needsCode) {
+      if (options.headed && options.onPagePrompt) {
+        const timeoutMs = options.pinTimeoutMs ?? 5 * 60_000;
+        notes.push(`Page ${pageNum} asked for a verification code - paused for manual entry before touching the page.`);
+        await options.onPagePrompt(
+          `\nPage ${pageNum} is asking for a verification code, which this tool can't read.\nThe code boxes have been left untouched for you.\nEnter the code in the open browser window, then press Enter here to continue (auto-continues in ${Math.round(timeoutMs / 60000)} min).`,
+          timeoutMs
+        );
+      } else {
+        notes.push(`STOPPED on page ${pageNum}: this step requires a verification code sent to you, which the tool can't read. Re-run with --headed to enter it yourself and let the run continue.`);
+        break;
+      }
+    }
+
     const res = await fillCurrentPage(page, anthropic, resume, resumeFilePath, jobDescription, context, jobTitle);
     for (const f of res.filled) filled.push({ ...f, label: `[p${pageNum}] ${f.label}` });
     for (const s of res.skipped) skipped.push({ ...s, label: `[p${pageNum}] ${s.label}` });
@@ -2048,26 +2102,6 @@ export async function fillApplication(
     const shot = path.join(outDir, pageNum === 1 ? "application-preview.png" : `application-preview-page${pageNum}.png`);
     await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
     screenshots.push(shot);
-
-    // A code sent to the candidate's inbox/phone: not something this tool
-    // can or should retrieve. Headed runs pause so a human can type it and
-    // let the run continue; headless runs exit cleanly, since nobody's there.
-    const needsCode = await page
-      .evaluate((src) => new RegExp(src, "i").test(document.body.innerText || ""), VERIFICATION_CODE_RE.source)
-      .catch(() => false);
-    if (needsCode) {
-      if (options.headed && options.onPagePrompt) {
-        const timeoutMs = options.pinTimeoutMs ?? 5 * 60_000;
-        notes.push(`Page ${pageNum} asked for a verification code - paused for manual entry.`);
-        await options.onPagePrompt(
-          `\nPage ${pageNum} is asking for a verification code, which this tool can't read.\nEnter it in the open browser window, then press Enter here to continue (auto-continues in ${Math.round(timeoutMs / 60000)} min).`,
-          timeoutMs
-        );
-      } else {
-        notes.push(`STOPPED on page ${pageNum}: this step requires a verification code sent to you, which the tool can't read. Re-run with --headed to enter it yourself and let the run continue.`);
-        break;
-      }
-    }
 
     // A stray modal (a policy/terms dialog opened by a mis-aimed click, a
     // cookie re-prompt) sits on top of the form and silently swallows the
