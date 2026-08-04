@@ -329,8 +329,10 @@ try {
   if (report.screenshots && report.screenshots.length > 1) {
     console.log(`\nScreenshots (one per page):`);
     for (const s of report.screenshots) console.log(`  - ${s}`);
-  } else {
+  } else if (report.screenshotPath) {
     console.log(`\nScreenshot saved to: ${report.screenshotPath}`);
+  } else {
+    console.log(`\nNo screenshot was taken - the flow stopped before reaching a fillable page. Check the notes below.`);
   }
 
   if (report.notes?.length) {
@@ -360,7 +362,7 @@ try {
           locationFlag: locPref.flagged ? { matched: locPref.matched, snippet: locPref.snippet } : null,
           filled: report.filled,
           skipped: report.skipped,
-          screenshots: report.screenshots ?? [report.screenshotPath],
+          screenshots: report.screenshots ?? (report.screenshotPath ? [report.screenshotPath] : []),
           notes: report.notes ?? [],
           submitted: false,
         },

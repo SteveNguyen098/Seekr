@@ -59,6 +59,16 @@ export interface DiscoveredField {
    * text (e.g. "Male"). Only meaningful for type === "radio". */
   groupQuestion: string;
   /**
+   * The raw `value` attribute - only meaningful for type === "radio".
+   * Together with groupName it forms a selector that survives a re-render,
+   * which `selector` (usually `#id`) does not: confirmed live on Workable,
+   * which regenerates every element's random id on each React re-render, so
+   * a `#id` captured at discovery time stops resolving as soon as any
+   * earlier field is filled. name+value are authored, stable, and unique
+   * within a group.
+   */
+  radioValue: string;
+  /**
    * True when this control should never be filled: an anti-bot honeypot, or
    * a widget that isn't part of the application form at all. Set from the
    * *static* signals only (see discoverFields) - the position-dependent
@@ -81,8 +91,19 @@ export interface DiscoveredField {
 export interface FillReport {
   filled: { label: string; value: string; generated?: boolean; lowConfidence?: boolean }[];
   skipped: { label: string; reason: string; required?: boolean }[];
-  /** First page's screenshot; kept for callers that expect a single path. */
-  screenshotPath: string;
+  /**
+   * First page's screenshot; kept for callers that expect a single path.
+   * null when the run stopped before any page ever reached the
+   * screenshot step (e.g. a verification-code pause on page 1 in a
+   * headless run) - never guess at a path here, since outDir is shared
+   * across runs against different postings and a guessed default can
+   * silently point at another job's leftover screenshot from a previous
+   * run. Confirmed live: exactly this happened when the CAPTCHA check
+   * used to run before filling/screenshotting - the "Screenshot saved
+   * to" message pointed at a file that was actually a different
+   * posting's screenshot from a prior run in the same --out directory.
+   */
+  screenshotPath: string | null;
   /** One screenshot per page of a multi-page flow. */
   screenshots?: string[];
   /** Flow-level messages: cookie choice, why the run stopped, hard stops. */
@@ -197,6 +218,32 @@ export function isStandardRecruitmentConsent(label: string): boolean {
   );
 }
 
+// Common phrasings for the control that opens an application form. "Apply"
+// covers most ATS platforms, but not all of them use that word at all -
+// confirmed live on Zoho Recruit (`<company>.zohorecruit.com`), whose entire
+// job page never contains the word "apply" anywhere; its CTA reads "I'm
+// interested" instead. That single gap broke two things at once: this
+// click-selector never found anything to click, and classifyUrl()'s
+// hasApply signal in scrape.ts (built from the same word list) never fired
+// either, so the page fell through to a weaker link-count heuristic and got
+// classified as a listings board instead of a single posting. Both places
+// share this list rather than keeping their own copies. Extend the list,
+// not the matching logic, when another platform's own wording turns up.
+export const APPLY_CTA_PHRASES = ["Apply", "I'm interested"];
+export const APPLY_CTA_RE = new RegExp(APPLY_CTA_PHRASES.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i");
+
+// Playwright's :has-text() extension needs its argument quoted, and doesn't
+// support backslash-escaping a quote character inside it - confirmed live,
+// the hard way: shipping the selector below with "I'm interested" wrapped in
+// single quotes broke out of its own quoting on the apostrophe and crashed
+// the entire run with an uncaught "Unexpected token" exception before a
+// single field was touched, on every posting - not just Zoho's. Pick
+// whichever quote character isn't present in the phrase instead of hardcoding one.
+function quoteForHasText(phrase: string): string {
+  const quote = phrase.includes('"') ? "'" : '"';
+  return `${quote}${phrase}${quote}`;
+}
+
 /** Opens the job page and clicks through to the application form if needed. */
 export async function openApplicationForm(page: Page, jobUrl: string): Promise<void> {
   // Some ATS embeds run on a company's own branded domain (e.g. Samsara's
@@ -218,7 +265,14 @@ export async function openApplicationForm(page: Page, jobUrl: string): Promise<v
   // job page itself, so failing to find or click an Apply button is not
   // grounds for aborting. Field discovery below is the real test of whether
   // we got somewhere useful.
-  const applyCandidates = await page.$$("a:has-text('Apply'), button:has-text('Apply'), [role=button]:has-text('Apply')");
+  const applyCandidates = await page
+    .$$(
+      APPLY_CTA_PHRASES.flatMap((p) => {
+        const q = quoteForHasText(p);
+        return [`a:has-text(${q})`, `button:has-text(${q})`, `[role=button]:has-text(${q})`];
+      }).join(", ")
+    )
+    .catch(() => []);
   for (const candidate of applyCandidates) {
     const usable = await candidate.isVisible().then((v) => v && candidate.isEnabled()).catch(() => false);
     if (!usable) continue;
@@ -472,6 +526,18 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           'ai-assistant-container, ai-assistant-skip-navigation-link, [id^="oda-"], [class*="oda-dialog"]'
         );
 
+        // Two distinct ways a real ATS wires a visible custom-styled control
+        // to an aria-hidden native input: aria-labelledby pointing at the
+        // visible text (Oracle's privacy checkbox, Rippling's SMS radios),
+        // or a plain wrapping/for-associated <label> with the visible text
+        // as a child - confirmed live on Workable, whose Yes/No radios are
+        // <label><input aria-hidden="true" ...><span>YES</span></label>
+        // with no aria-labelledby at all. Missing the second shape meant two
+        // fully-answerable, real, required questions ("Do you have a
+        // reliable vehicle...", "...a personal working laptop?") were
+        // discarded as if they were invisible plumbing - correctly grouped
+        // with their real question text by the code above, then thrown away
+        // before ever reaching Claude, with no fill and no skip note either.
         let hasVisibleLabelPartner = false;
         const labelledbyRef = el.getAttribute("aria-labelledby");
         if (labelledbyRef) {
@@ -481,13 +547,34 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             hasVisibleLabelPartner = tr.width > 0 && tr.height > 0;
           }
         }
+        if (!hasVisibleLabelPartner) {
+          const wrappingLabel = el.closest("label");
+          if (wrappingLabel) {
+            // Check for a visible descendant *other than the control
+            // itself* - not the label's own aggregate rect, which would
+            // include the control's own (possibly non-zero, e.g. a
+            // custom-styled 13x13 checkbox) box and could false-positive
+            // on a control with no real visible partner at all.
+            hasVisibleLabelPartner = Array.from(wrappingLabel.querySelectorAll("*")).some((node) => {
+              if (node === el) return false;
+              const r = node.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            });
+          } else if (el.id) {
+            const forLabel = document.querySelector(`label[for="${el.id}"]`);
+            if (forLabel) {
+              const lr = forLabel.getBoundingClientRect();
+              hasVisibleLabelPartner = lr.width > 0 && lr.height > 0;
+            }
+          }
+        }
 
         let skipAlways = false;
         let skipReason = "";
         if (honeypotNamed) {
           skipAlways = true;
           skipReason = "hidden anti-bot (honeypot) field - deliberately left empty";
-        } else if (ariaHiddenAttr) {
+        } else if (ariaHiddenAttr && !hasVisibleLabelPartner) {
           // Both are correctly skipped, but they are not the same thing and
           // shouldn't read as if they were. aria-hidden overwhelmingly marks
           // a widget's own internal plumbing - react-select, for instance,
@@ -496,6 +583,15 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           // fields. Reporting those as "anti-bot honeypot" is alarming and
           // wrong; the honeypot label is now reserved for controls actually
           // named like one.
+          //
+          // Gated on !hasVisibleLabelPartner - confirmed live on Workable
+          // that aria-hidden also covers an entirely different, legitimate
+          // case: a native radio/checkbox styled behind a visible custom
+          // control, where the input itself is aria-hidden purely so a
+          // screen reader doesn't announce both it and the styled label.
+          // Before this gate, two fully real, correctly-grouped-with-their-
+          // question-text, required Yes/No questions were discarded here
+          // and never seen again - not filled, not skipped, no note at all.
           skipAlways = true;
           skipReason = "hidden from assistive tech (aria-hidden) - not a user-facing field";
         } else if (inAiWidget) {
@@ -531,7 +627,8 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
 
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, skipAlways, skipReason, hasVisibleLabelPartner };
+        const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -686,7 +783,33 @@ export async function checkField(ctx: FormContext, selector: string): Promise<bo
     }
   }
 
-  // 5. Last resort: bypass the actionability wait. Still verified, so a
+  // 5. A plain wrapping <label> with no aria-labelledby at all. Confirmed
+  //    live on Workable, whose Yes/No radios are
+  //    <label><input aria-hidden tabindex="-1"><span>YES</span></label>:
+  //    strategy 3 can't help because the styled input IS the topmost
+  //    element at its own centre point (so elementFromPoint returns the
+  //    input itself and bails), and strategy 4 never fires because there's
+  //    no aria-labelledby. The wrapping label is the actual surface a real
+  //    user clicks. Same hyperlink guard as strategy 4, for the same
+  //    reason - a label containing an <a> can navigate or open a modal.
+  const labelInfo = await ctx
+    .$eval(selector, (el) => {
+      const label = el.closest("label");
+      if (!label) return null;
+      if (label.querySelector("a[href]")) return null;
+      label.setAttribute("data-seekr-check-label", "1");
+      return true;
+    })
+    .catch(() => null);
+  if (labelInfo) {
+    await ctx.click('[data-seekr-check-label="1"]', { timeout: 2500 }).catch(() => {});
+    await ctx
+      .$$eval('[data-seekr-check-label="1"]', (els) => els.forEach((e) => e.removeAttribute("data-seekr-check-label")))
+      .catch(() => {});
+    if (await isChecked()) return true;
+  }
+
+  // 6. Last resort: bypass the actionability wait. Still verified, so a
   //    forced click that doesn't actually toggle is reported as a failure
   //    rather than a success.
   await ctx.check(selector, { timeout: 2000, force: true }).catch(() => {});
@@ -1058,6 +1181,21 @@ async function researchSalaryRange(anthropic: Anthropic, jobTitle: string, jobDe
   }
 }
 
+// A question can require an actual real-world action no LLM call can
+// perform - "visit this URL, click GO, report your speed" was a real one,
+// confirmed live: Claude invented a specific, plausible-looking "Download:
+// 350 Mbps / Upload: 25 Mbps" rather than admit it couldn't run a live
+// speed test, because the "required fields never come back empty" rule
+// below pushed it to answer *something*. That's a materially worse failure
+// than an ordinary low-confidence guess (inferring years of experience from
+// a resume, say) - it's a specific, checkable, fabricated data point on an
+// application, not an extrapolation. This sentinel is a non-empty value
+// (so it satisfies the schema and the required-field/retry machinery
+// without any of that logic needing to know about the distinction), which
+// fillCurrentPage intercepts below and converts to a skip rather than ever
+// typing it into the real form.
+const CANNOT_VERIFY_MARKER = "[CANNOT VERIFY - REQUIRES EXTERNAL ACTION]";
+
 async function answerWithClaude(
   anthropic: Anthropic,
   resume: Resume,
@@ -1096,7 +1234,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -1278,6 +1416,39 @@ export async function fillCurrentPage(
     if (!radioGroups.has(field.groupName)) radioGroups.set(field.groupName, []);
     radioGroups.get(field.groupName)!.push(field);
   }
+  // A non-sensitive radio group whose real question lives in groupQuestion
+  // and whose options are the group's own members. Confirmed live on
+  // Workable: "*Do you have a reliable vehicle...?" / "*Until you receive
+  // work equipment, do you have a personal working laptop?" render as
+  // <label><input type=radio><span>YES</span></label> pairs sharing a
+  // native `name`. These reached neither answer path that already exists -
+  // the sibling-<button> harvest (Ashby's shape) finds no buttons here so
+  // field.options stays empty, and the EEOC path below only handles
+  // SENSITIVE_RE groups - so both fell through to the blanket
+  // "checkbox/consent field left for user to decide" skip, reported
+  // uselessly as "YES"/"NO" with the actual question nowhere in sight.
+  // Answered as one logical question, then resolved back to the specific
+  // member radio to click.
+  const radioGroupMembersBySelector = new Map<string, DiscoveredField[]>();
+  for (const members of radioGroups.values()) {
+    const question = members[0].groupQuestion || members[0].label;
+    if (SENSITIVE_RE.test(question.toLowerCase())) continue;
+    if (members.length < 2 || !members[0].groupQuestion) continue;
+    const anchor = members[0];
+    radioGroupMembersBySelector.set(anchor.selector, members);
+    toAnswer.push({
+      selector: anchor.selector,
+      label: question,
+      tag: anchor.tag,
+      type: anchor.type,
+      options: members.map((m) => m.label),
+      isCombobox: false,
+      required: members.some((m) => m.required),
+      multiSelect: false,
+    });
+    for (const m of members) handledSelectors.add(m.selector);
+  }
+
   for (const members of radioGroups.values()) {
     const question = members[0].groupQuestion || members[0].label;
     if (!SENSITIVE_RE.test(question.toLowerCase())) continue;
@@ -1771,6 +1942,15 @@ export async function fillCurrentPage(
       const { value, values, confidence } = answer!;
       const lowConfidence = confidence === "low";
 
+      if (value === CANNOT_VERIFY_MARKER || values.includes(CANNOT_VERIFY_MARKER)) {
+        skipped.push({
+          label: field.label,
+          reason: "requires performing a real external action (visiting a live URL/tool, a timed assessment, etc.) that can't be answered from the resume/context - please complete this manually",
+          required,
+        });
+        continue;
+      }
+
       if (field.multiSelect) {
         if (field.isCombobox) {
           const picked = await selectMultipleComboboxOptions(formCtx, field.selector, values);
@@ -1788,6 +1968,43 @@ export async function fillCurrentPage(
       }
 
       if (field.type === "checkbox" || field.type === "radio") {
+        // A real radio group (see radioGroupMembersBySelector above): the
+        // answer names one of the group's own member options, so resolve
+        // it back to that member's own input and tick it directly -
+        // there's no sibling button to click here.
+        const groupMembers = radioGroupMembersBySelector.get(field.selector);
+        if (groupMembers) {
+          const wanted = value.trim().toLowerCase();
+          const match =
+            groupMembers.find((m) => m.label.trim().toLowerCase() === wanted) ??
+            groupMembers.find((m) => m.label.trim().toLowerCase().startsWith(wanted)) ??
+            groupMembers.find((m) => wanted.startsWith(m.label.trim().toLowerCase()));
+          if (!match) {
+            skipped.push({ label: field.label, reason: `Claude answered "${value}", which doesn't match any of this question's options [${groupMembers.map((m) => m.label).join(", ")}]`, required });
+            continue;
+          }
+          // Re-resolve by name+value rather than reusing match.selector.
+          // The stored selector is usually `#id`, and Workable regenerates
+          // every random id on each React re-render - so by the time this
+          // runs (after all the deterministic text fills), the id captured
+          // at discovery no longer resolves and every checkField strategy
+          // fails silently against a selector matching nothing. name+value
+          // are authored and stable across renders. Measured, not assumed:
+          // radio ids were confirmed to change after merely filling the
+          // name/email fields, with the original selector resolving to null.
+          // Escaped for a double-quoted attribute selector. CSS.escape is a
+          // browser API and this string is built in Node, so escape the two
+          // characters that can break out of the quotes directly.
+          const attr = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const stableSelector =
+            match.groupName && match.radioValue
+              ? `input[type="radio"][name="${attr(match.groupName)}"][value="${attr(match.radioValue)}"]`
+              : match.selector;
+          const ok = await checkField(formCtx, stableSelector);
+          if (ok) filled.push({ label: field.label, value: match.label, generated: true, lowConfidence });
+          else skipped.push({ label: field.label, reason: `could not select "${match.label}" for this question`, required });
+          continue;
+        }
         // The choice-buttons pattern (see clickChoiceButton) - the real
         // click surface is a sibling <button>, not the underlying
         // input, so this can't go through fillTextVerified/selectOption
@@ -2060,11 +2277,6 @@ export async function fillApplication(
 
   let pageNum = 1;
   for (; pageNum <= MAX_PAGES; pageNum++) {
-    if (await detectCaptcha(page)) {
-      notes.push(`HARD STOP on page ${pageNum}: a CAPTCHA / bot challenge is present. The tool never attempts to solve or bypass these - finish this application manually.`);
-      break;
-    }
-
     // A code sent to the candidate's inbox/phone: not something this tool
     // can or should retrieve. Headed runs pause so a human can type it and
     // let the run continue; headless runs exit cleanly, since nobody's there.
@@ -2102,6 +2314,17 @@ export async function fillApplication(
     const shot = path.join(outDir, pageNum === 1 ? "application-preview.png" : `application-preview-page${pageNum}.png`);
     await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
     screenshots.push(shot);
+
+    // Checked here - after filling whatever's fillable, not before - so a
+    // CAPTCHA sitting anywhere on the page (often just near the submit
+    // button, not blocking the rest of the form) no longer costs the whole
+    // page's worth of real, answerable fields. The "never solve or bypass"
+    // guarantee only actually requires stopping before the next
+    // Next/Submit click, which is exactly where this now sits.
+    if (await detectCaptcha(page)) {
+      notes.push(`HARD STOP on page ${pageNum}: a CAPTCHA / bot challenge is present. The tool never attempts to solve or bypass these - finish this application manually.`);
+      break;
+    }
 
     // A stray modal (a policy/terms dialog opened by a mis-aimed click, a
     // cookie re-prompt) sits on top of the form and silently swallows the
@@ -2145,7 +2368,7 @@ export async function fillApplication(
 
   if (pageNum > MAX_PAGES) notes.push(`Stopped after the ${MAX_PAGES}-page safety cap.`);
 
-  return { filled, skipped, screenshotPath: screenshots[0] ?? path.join(outDir, "application-preview.png"), screenshots, notes };
+  return { filled, skipped, screenshotPath: screenshots[0] ?? null, screenshots, notes };
 }
 
 /**

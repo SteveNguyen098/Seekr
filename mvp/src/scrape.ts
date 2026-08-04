@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import { APPLY_CTA_RE } from "./apply.js";
 
 export interface JobPosting {
   title: string;
@@ -113,7 +114,7 @@ export async function classifyUrl(
   // Boards on SPA platforms render their listings after load.
   await page.waitForTimeout(2500);
 
-  const signals = await page.evaluate(() => {
+  const signals = await page.evaluate((applyCtaSrc) => {
     const links = Array.from(document.querySelectorAll("a[href]"));
     const postingLike = links.filter((a) => {
       const href = (a as HTMLAnchorElement).href;
@@ -129,11 +130,11 @@ export async function classifyUrl(
     const text = document.body.innerText || "";
     return {
       postingLinks: uniq.size,
-      hasApply: /\bapply\b/i.test(text),
+      hasApply: new RegExp(applyCtaSrc, "i").test(text),
       hasForm: !!document.querySelector("input[type=file], form input[type=email]"),
       textLength: text.length,
     };
-  });
+  }, APPLY_CTA_RE.source);
 
   // A board's defining feature is many distinct posting links.
   if (signals.postingLinks >= 5) return { kind: "board", reason: `found ${signals.postingLinks} job links` };

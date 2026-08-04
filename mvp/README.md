@@ -308,7 +308,7 @@ work, not this wrapper.
 
 ## Verified against (live, as of this writing)
 
-Tested against real, live job postings on four ATS platforms (company
+Tested against real, live job postings on seven ATS platforms (company
 names withheld - these are real employers' live sites, not test fixtures):
 
 - **Greenhouse** (`job-boards.greenhouse.io/<company>`) - 7 boards, including
@@ -336,6 +336,25 @@ names withheld - these are real employers' live sites, not test fixtures):
   questions aren't discovered at all, and the multi-page loop wastes real
   work re-processing already-filled fields. See the Oracle-specific
   bullets under Known limitations for the exact, honest breakdown.
+- **Workable** (`apply.workable.com/<company>`) - 1 posting; a sixth
+  platform. Fills the full form including résumé upload, custom screening
+  questions and Yes/No radio questions. Surfaced three stacked bugs worth
+  knowing about, all fixed and re-verified live: it marks the *real*
+  radio input `aria-hidden="true"` (so a screen reader announces only the
+  styled label, not both), which the blanket aria-hidden skip was
+  discarding as "not user-facing"; non-sensitive radio *groups* had no
+  answer path at all; and most importantly it **regenerates every
+  element's random `id` on each React re-render**, so a `#id` captured at
+  discovery time stops resolving as soon as any earlier field is filled.
+  See Known limitations for the two gaps still open there (a phone
+  country-code widget and the address sub-fields).
+- **Zoho Recruit** (`<company>.zohorecruit.com`) - 1 posting; a seventh
+  platform, and the one that showed the apply-affordance detection was too
+  narrow: its job page never contains the word "apply" anywhere, the CTA
+  reads "I'm interested" instead. That single gap both prevented the form
+  from ever opening and made a direct link to one posting classify as a
+  listings board. Reaches the form; the posting's own end-of-form CAPTCHA
+  is a deliberate hard stop.
 
 Each successful run matched a real posting, filled the fields it could
 confidently infer, and stopped before submit, with the on-screen form
@@ -352,6 +371,39 @@ this was caught and fixed during testing).
 
 ## Known limitations (POC scope)
 
+- **Selectors captured at discovery time can go stale on React-heavy
+  platforms.** Confirmed live on Workable, which regenerates every
+  element's random `id` on each re-render: radio ids changed after merely
+  filling the name/email fields, and the originally-captured `#id`
+  resolved to `null`. Because `discoverFields()` prefers `#<id>` as its
+  selector - and every `checkField` strategy is `.catch()`-guarded - this
+  failed *silently*, reporting a truthful but baffling "could not select
+  YES" against a selector matching nothing. Radio groups now re-resolve at
+  click time via the stable, authored `name`+`value` pair instead. The
+  `data-seekr-field` fallback marker has the same weakness (a re-render
+  wipes the attribute too), so this is the first thing to suspect on any
+  future "the selector stopped working mid-run" symptom.
+- **Two Workable-specific field gaps remain.** Its phone country-code
+  control is an `<input type="tel">` with no id, placeholder, `aria-label`
+  or `aria-labelledby` at all, whose wrapping `<label>` has a
+  3,192-character `textContent` (the entire country list concatenated) -
+  so that wall of text becomes the field's "label" and the field ends up
+  receiving the wrong value. Separately, its `#city`/`#postcode`/
+  `#country` sub-fields carry *no* label signal whatsoever, so the
+  DOM-proximity fallback grabs unrelated nearby text and only the street
+  line gets filled. Both have obvious fix directions (fall back to
+  `type="tel"`; use a meaningful `id` as a label signal when nothing else
+  resolves) but neither is implemented.
+- **Questions requiring a real external action are deliberately left
+  blank.** A live posting asked the candidate to run a speed test at a
+  named URL and report the numbers. Claude has no way to do that, but the
+  "required fields never come back empty" rule pushed it to invent a
+  specific, plausible-looking result anyway - a fabricated, checkable data
+  point on a real application, which is materially worse than an honest
+  gap. Such questions now return a sentinel that's intercepted and
+  reported as a skip instead. This covers live lookups, timed
+  assessments, and similar; it is not a general "hard question" escape
+  hatch.
 - Career page scraping has fast paths for Greenhouse and Lever, and a
   generic link-heuristic fallback for everything else (Workday hasn't been
   tested live yet). Confirmed live that the fallback doesn't work on
