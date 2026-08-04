@@ -1886,7 +1886,7 @@ export async function dismissCookieBanner(page: Page): Promise<string | null> {
  * button on an informational dialog. Never agrees to anything scoped
  * beyond acknowledging the dialog itself.
  */
-async function dismissBlockingOverlay(page: Page): Promise<string | null> {
+export async function dismissBlockingOverlay(page: Page): Promise<string | null> {
   const open = await page
     .evaluate(() => {
       const d = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], .oj-dialog')).find((el) => {
@@ -1929,7 +1929,7 @@ async function dismissBlockingOverlay(page: Page): Promise<string | null> {
 }
 
 /** Finds a clickable "next/continue" control, excluding submit/abort controls. */
-async function findNextControl(page: Page) {
+export async function findNextControl(page: Page) {
   const els = await page.$$("button, [role=button], input[type=button], input[type=submit], a");
   for (const el of els) {
     const raw = ((await el.textContent().catch(() => "")) || "") + " " + ((await el.getAttribute("value").catch(() => "")) || "");
@@ -1983,7 +1983,7 @@ async function readValidationErrors(page: Page): Promise<string[]> {
 }
 
 /** True if the page currently shows a CAPTCHA / bot challenge. */
-async function detectCaptcha(page: Page): Promise<boolean> {
+export async function detectCaptcha(page: Page): Promise<boolean> {
   // Only a challenge a HUMAN must actually solve counts. The presence of a
   // CAPTCHA frame does not: Google's invisible reCAPTCHA loads a background
   // frame on essentially every Greenhouse-embedded form, scoring the session

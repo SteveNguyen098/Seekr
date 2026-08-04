@@ -8,3 +8,7 @@ qa_context.txt
 work_auth_context.txt
 *.bat
 .browser-profile/
+# Local diagnostic scripts: these hardcode a specific real employer's
+# posting URL and local paths, same as the *.bat launchers above, so they
+# stay out of the public repo.
+diagnose-*.mjs
