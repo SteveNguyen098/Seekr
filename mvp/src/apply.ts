@@ -430,6 +430,13 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
         const required = requiredAttr || /\*/.test(label) || cssRequiredAsterisk;
+        // type="tel" input's label can capture unrelated text - confirmed live on
+        // Workable, where the phone input has no id/placeholder/aria-label at all,
+        // so its wrapping <label> (which also contains a hidden 3,192-char
+        // country-code list) becomes the label unchecked. Scoped to type="tel"
+        // only - can't affect any other field - and placed after `required` so a
+        // leading "*" in the garbage text still counts before it's discarded.
+        if (type === "tel" && label.length > 100) label = "Phone number";
         let options: string[] =
           tag === "SELECT"
             ? Array.from((el as HTMLSelectElement).options).map((o) => o.textContent?.trim() || "")
