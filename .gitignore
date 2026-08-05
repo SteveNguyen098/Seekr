@@ -1,2 +1,5 @@
 Resume V3 Copy.docx
 Seekr Resume Template.docx
+# Debugging write-ups for specific real employers' postings - not for the
+# public repo, same reasoning as mvp/.gitignore's diagnose-*.mjs.
+Issue - *.docx

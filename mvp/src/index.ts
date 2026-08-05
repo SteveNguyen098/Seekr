@@ -130,9 +130,23 @@ const headed = args["headed"] === "true";
 // Disable with --no-profile to get the old throwaway-context behaviour.
 const useProfile = args["no-profile"] !== "true";
 const profileDir = path.resolve(args["profile"] || "./.browser-profile");
+// Chromium under CDP automation (which is what Playwright always is) sets
+// navigator.webdriver = true by default - confirmed live via a direct check
+// of this same launch config. That's the single most common signal
+// bot-management checks (Cloudflare Turnstile included) key on, and it
+// doesn't stop applying once control passes back to a human: a real person
+// clicking a real "verify you're human" checkbox in this same window still
+// does so inside a page that self-reports as automated, so the challenge
+// can legitimately refuse a pass token regardless of who's actually
+// clicking - confirmed live on a Workable posting behind Cloudflare, where
+// the checkbox failed with a generic "Something went wrong" every time.
+// This flag only suppresses that one flag; it does not touch any actual
+// CAPTCHA-solving logic (there isn't any - see detectCaptcha) and won't
+// necessarily satisfy every bot-management check some sites layer on top.
+const launchArgs = ["--disable-blink-features=AutomationControlled"];
 const context = useProfile
-  ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 } })
-  : await (await chromium.launch({ headless: !headed })).newContext({ viewport: { width: 1280, height: 900 } });
+  ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 }, args: launchArgs })
+  : await (await chromium.launch({ headless: !headed, args: launchArgs })).newContext({ viewport: { width: 1280, height: 900 } });
 const page = context.pages()[0] ?? (await context.newPage());
 if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications persist between runs)`);
 // Closing the context also closes its browser in both modes.

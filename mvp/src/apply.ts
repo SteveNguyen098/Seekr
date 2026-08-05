@@ -1234,7 +1234,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use it and say you're fine with that listed range (high confidence). This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use that range (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical range for this specific role and location based on your own knowledge, as "$X-$Y", and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "$65,000-$80,000 depending on scope and responsibilities" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): answer with a BARE NUMBER ONLY - digits and, if needed, a decimal point, nothing else: no "$", no comma, no "-" range, no words. Confirmed live: a real field for this exact question type accepted only numeral characters and a period, and a sentence-style answer ("I am fine with the salary range posted...") was silently rejected, leaving a required field empty. If a range applies (from the job description or research below), use its midpoint as a single number. FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use its midpoint as a plain number (e.g. a stated "$68,000-$84,000" becomes "76000") at high confidence. This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use its midpoint the same way (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical figure for this specific role and location based on your own knowledge, as a plain number, and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "72000" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -1363,7 +1363,16 @@ async function fillTextVerified(
   }
   await delay(150);
   const persisted = await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => "");
-  if (persisted !== value) {
+  // Some widgets auto-format a plain numeral as it's entered (a thousands
+  // separator inserted on input/blur) - confirmed live on a Workable salary
+  // field, where "76000" persisted correctly as "76,000" but the exact-match
+  // check below reported it as failed, with the same "select it manually"
+  // reason a genuinely-reverted custom dropdown gets. Stripping commas
+  // before comparing catches this real case without weakening the check for
+  // an actual revert (a truly-reset field lands on "", which still won't
+  // match after stripping).
+  const stripCommas = (s: string) => s.replace(/,/g, "").trim();
+  if (stripCommas(persisted) !== stripCommas(value)) {
     skipped.push({
       label,
       reason: `entered "${value}" but it did not persist (likely a custom dropdown - select it manually)`,
@@ -2390,14 +2399,20 @@ async function reverifyFilledTextFields(
   filled: FillReport["filled"],
   skipped: FillReport["skipped"]
 ): Promise<FillReport["filled"]> {
+  // Same auto-formatting-widget allowance as fillTextVerified above (see
+  // its comment) - without it, a field that auto-formats "76000" to
+  // "76,000" looks "reset" on every pass through here and gets a
+  // misleading "got reset before the screenshot" note despite never
+  // actually having changed.
+  const stripCommas = (s: string) => s.replace(/,/g, "").trim();
   const toRemove = new Set<number>();
   for (const rec of filledSelectors) {
     const current = await ctx.$eval(rec.selector, (el) => (el as HTMLInputElement).value).catch(() => undefined);
-    if (current === rec.value) continue;
+    if (current !== undefined && stripCommas(current) === stripCommas(rec.value)) continue;
 
     const refilled = await ctx.fill(rec.selector, rec.value).then(() => true).catch(() => false);
     const persisted =
-      refilled && (await ctx.$eval(rec.selector, (el) => (el as HTMLInputElement).value).catch(() => "")) === rec.value;
+      refilled && stripCommas(await ctx.$eval(rec.selector, (el) => (el as HTMLInputElement).value).catch(() => "")) === stripCommas(rec.value);
     if (persisted) continue;
 
     toRemove.add(rec.filledIndex);
