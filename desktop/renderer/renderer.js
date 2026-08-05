@@ -54,6 +54,21 @@ $("stop").addEventListener("click", async () => {
   setRunning(false);
 });
 
+// Tears down anything active (mid-run, or paused waiting on you to close
+// the review browser) and returns to a blank slate - so starting the next
+// role never requires quitting and relaunching the whole app. Safe to
+// click from Idle too; the main process just no-ops if nothing's running.
+$("reset").addEventListener("click", async () => {
+  await window.seekr.reset();
+  setRunning(false);
+  $("pause").classList.add("hidden");
+  $("results").classList.add("hidden");
+  logEl.textContent = "";
+  $("url").value = "";
+  $("url").focus();
+  $("status").textContent = "Idle";
+});
+
 $("continue").addEventListener("click", async () => {
   await window.seekr.sendEnter();
   $("pause").classList.add("hidden");

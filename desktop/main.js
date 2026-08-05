@@ -6,7 +6,7 @@
 // is duplicated here - if this file were deleted, the CLI would still work
 // identically.
 const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, execFile } = require("node:child_process");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
@@ -43,6 +43,60 @@ function saveSettings() {
 let win = null;
 let child = null;
 
+const PROFILE_DIR = path.resolve(MVP_DIR, ".browser-profile");
+
+// child.kill() only terminates the tsx/Node process - it does not take down
+// the Chromium process Playwright launches underneath it. The obvious fix,
+// taskkill /T (kill the whole process tree rooted at the launcher's pid),
+// does NOT work here - measured directly: Chromium detaches from its
+// launching process during its own startup sequence, so by the time
+// anything tries to tear it down, the real long-lived browser process has
+// already been re-parented away (observed landing under explorer.exe) and
+// taskkill /T killed everything *except* it. This is almost certainly why
+// 44 orphaned Chromium processes were found still holding
+// .browser-profile's lock this session, each blocking every subsequent
+// launchPersistentContext() call with "Opening in existing browser
+// session" until manually hunted down.
+//
+// The reliable signal isn't ancestry, it's what the process was launched
+// with: every process belonging to a persistent-context browser carries
+// --user-data-dir=<profileDir> on its own command line, regardless of
+// who its current OS-level parent is. Confirmed live: this finds and
+// kills the browser that taskkill /T left behind.
+function killProfileBrowsers() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve();
+    const escaped = PROFILE_DIR.replace(/'/g, "''");
+    // Playwright launches a different binary per mode - chrome.exe when
+    // headed (what this app always uses today: renderer.js hardcodes
+    // headed: true), chrome-headless-shell.exe when headless. Matching
+    // both is cheap insurance against that ever changing.
+    const script = `Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'chrome.exe' -or $_.Name -eq 'chrome-headless-shell.exe') -and $_.CommandLine -like '*${escaped}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+    execFile("powershell", ["-NoProfile", "-Command", script], () => resolve());
+  });
+}
+
+// Kills the CLI process itself (if still alive - it may have already
+// exited, e.g. if the browser window was closed by hand) and separately
+// sweeps for the actual browser via killProfileBrowsers(). Used for both
+// "Stop"/"New run" and on app quit, since all three can end a run while its
+// persistent-profile browser is still open.
+async function killActiveRun() {
+  if (child) {
+    if (process.platform === "win32") {
+      await new Promise((resolve) => execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => resolve()));
+    } else {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    child = null;
+  }
+  await killProfileBrowsers();
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1100,
@@ -60,7 +114,7 @@ app.whenReady().then(() => {
   createWindow();
 });
 app.on("window-all-closed", () => {
-  if (child) child.kill();
+  killActiveRun();
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -135,6 +189,15 @@ ipcMain.handle("run", async (_e, opts) => {
     shell: false,
     env: { ...process.env, FORCE_COLOR: "0", ELECTRON_RUN_AS_NODE: "1" },
   });
+  // Captured so the close handler below can tell "this exact process" apart
+  // from "whatever the module-level `child` happens to be by the time the
+  // OS gets around to telling Node it exited" - those can diverge now that
+  // Reset makes kill-then-immediately-start-another-run a normal flow, not
+  // an edge case. Without this, a delayed close event from a run just
+  // killed by Reset would null out the *new* run's `child` the moment it
+  // arrives and push a stale run-finished at the renderer over top of the
+  // new run's live output.
+  const thisChild = child;
 
   const onChunk = (buf) => {
     const text = buf.toString();
@@ -145,6 +208,7 @@ ipcMain.handle("run", async (_e, opts) => {
   child.stderr.on("data", onChunk);
 
   child.on("close", (code) => {
+    if (child !== thisChild) return; // superseded by a later run - not our state to touch
     child = null;
     let report = null;
     try {
@@ -171,12 +235,19 @@ ipcMain.handle("send-enter", async () => {
 });
 
 ipcMain.handle("stop", async () => {
-  if (child) {
-    child.kill();
-    child = null;
-    return true;
-  }
-  return false;
+  const wasRunning = !!child;
+  await killActiveRun();
+  return wasRunning;
+});
+
+// Lets a new role start without quitting and relaunching the whole app.
+// Tears down whatever's currently running (if anything) the same reliable
+// way "stop" does, so the browser-profile lock is actually released rather
+// than left behind for the next run to trip over. The renderer clears its
+// own UI state (log, results, url field) after this resolves.
+ipcMain.handle("reset", async () => {
+  await killActiveRun();
+  return true;
 });
 
 function send(channel, payload) {
