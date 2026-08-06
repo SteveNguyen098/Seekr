@@ -377,7 +377,28 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // instead of the real "Decatur") despite a real, unambiguous
         // profile-driven answer being available - it just never got
         // routed to it.
-        if (/^(select|search|choose|start typing|type here)\.{0,3}$/i.test(label.trim())) label = "";
+        // "file-input" is the same failure mode again, confirmed live on a
+        // BambooHR/Fabric posting: its file-upload widget's own component
+        // hardcodes aria-label="file-input" - a real, non-empty aria-label,
+        // so it wins the cascade and the fallback below never runs. The
+        // actual visible label ("Resume*") sits right there as a sibling
+        // paragraph a few ancestors up, exactly the shape the proximity
+        // fallback is built to find - but only once this is cleared first.
+        // Left unfixed, the field looked like it had no discoverable label
+        // at all, and the deliberately-conservative resume-vs-not-resume
+        // check (only matches "resume"/"cv" in the id/name/label) then
+        // correctly, but wrongly in outcome, left the actual resume upload
+        // empty on a required field.
+        if (/^(select|search|choose|start typing|type here|file-input)\.{0,3}$/i.test(label.trim())) label = "";
+        // Clearing "file-input" above wasn't the end of it - confirmed
+        // live, the proximity fallback below then found "Choose File*No
+        // file selected" (this same widget's own button caption + status
+        // text, both closer ancestors than the real "Resume*" label a few
+        // levels further up) before ever reaching it. "No file selected"
+        // is generic file-picker chrome, not a real question, on any
+        // platform - unlike "Choose File" alone, it's specific enough that
+        // clearing on it can't plausibly discard a real label.
+        if (type === "file" && /no file selected/i.test(label)) label = "";
         if (!label) {
           // Last resort: some fields (confirmed live on Rippling's ATS -
           // both per-job "custom questions" like salary requirements, and
@@ -396,7 +417,17 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           let node: Element | null = el;
           for (let i = 0; i < 8 && node && !label; i++) {
             const text = node.previousElementSibling?.textContent?.trim() || "";
-            if (text.length > 2 && text.length < 300) label = text;
+            // The upfront "no file selected" clear above only catches it
+            // when an *earlier* signal (aria-label etc.) produced it -
+            // confirmed live that this walk itself can independently land
+            // on the exact same file-picker chrome (a closer ancestor's
+            // "Choose File" button + status text, concatenated by
+            // .textContent) before ever reaching the real "Resume*" label
+            // 1-2 levels further up. Rejecting it here lets the loop keep
+            // walking to find that real label instead of settling for
+            // chrome the same way a cleared-then-reset label would.
+            const isFileChrome = type === "file" && /no file selected/i.test(text);
+            if (text.length > 2 && text.length < 300 && !isFileChrome) label = text;
             node = node.parentElement;
           }
         }
@@ -463,17 +494,50 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
         const multiSelect = tag === "SELECT" && (el as HTMLSelectElement).multiple;
 
-        // Build a resilient selector: prefer id. Otherwise, DO NOT use
-        // `tag:nth-of-type(i+1)` - that CSS pseudo-class counts siblings
-        // within each element's own parent, not a page-wide position, so a
-        // flat loop index does not correspond to what it actually selects
-        // (on forms where every field sits in its own wrapper div, most
-        // inputs are "the 1st input of their parent" and the selector
-        // becomes ambiguous or points at the wrong element entirely).
-        // Instead, tag the live element with a unique marker attribute and
-        // select on that - guaranteed unique regardless of DOM shape.
+        // Build a resilient selector. Prefer a unique `name` attribute over
+        // `id` when both exist - confirmed live on two unrelated platforms
+        // (Workable, BambooHR/Fabric) that their frameworks reassign a
+        // fresh, differently-numbered `id` on every re-render (Workable:
+        // random ids; BambooHR: sequential "FabricTextField-NNN", observed
+        // changing after merely filling an unrelated field elsewhere on the
+        // same page), so a selector captured once at discovery time can go
+        // stale mid-run. The failure mode is worse than a clean error: a
+        // stale #id makes every downstream .fill()/.$eval() throw or
+        // .catch()-fall-back to "", which gets reported as "entered X but
+        // it did not persist (likely a custom dropdown)" - a plausible-
+        // sounding but wrong diagnosis that sends whoever reads the report
+        // looking in the wrong place entirely. `name` survived the same
+        // re-render unchanged in both cases (confirmed live: BambooHR's
+        // City field kept name="city.value" across an id change from
+        // FabricTextField-379 to -383).
+        //
+        // Only used when it uniquely identifies this element. A shared
+        // `name` is the normal, correct shape for a radio/checkbox group,
+        // which already has its own separate stable name+value handling
+        // elsewhere in this file and should keep falling through to id/the
+        // marker attribute below - a non-unique name here would silently
+        // target every member of the group at once instead of just this
+        // one.
+        //
+        // DO NOT use `tag:nth-of-type(i+1)` for the final fallback - that
+        // CSS pseudo-class counts siblings within each element's own
+        // parent, not a page-wide position, so a flat loop index does not
+        // correspond to what it actually selects (on forms where every
+        // field sits in its own wrapper div, most inputs are "the 1st
+        // input of their parent" and the selector becomes ambiguous or
+        // points at the wrong element entirely). Instead, tag the live
+        // element with a unique marker attribute and select on that -
+        // guaranteed unique regardless of DOM shape.
+        const nameAttr = el.getAttribute("name");
         let selector: string;
-        if (el.id) {
+        if (nameAttr && document.getElementsByName(nameAttr).length === 1) {
+          // Inlined rather than a named helper - a nested const arrow
+          // function here gets compiled with an esbuild __name() wrapper
+          // that doesn't exist once this callback is serialized and shipped
+          // into the page for $$eval to run, throwing "__name is not
+          // defined" the moment this code actually ran. Confirmed live.
+          selector = `[name="${nameAttr.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+        } else if (el.id) {
           selector = `#${CSS.escape(el.id)}`;
         } else {
           el.setAttribute("data-seekr-field", String(i));
@@ -1241,7 +1305,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Resume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): answer with a BARE NUMBER ONLY - digits and, if needed, a decimal point, nothing else: no "$", no comma, no "-" range, no words. Confirmed live: a real field for this exact question type accepted only numeral characters and a period, and a sentence-style answer ("I am fine with the salary range posted...") was silently rejected, leaving a required field empty. If a range applies (from the job description or research below), use its midpoint as a single number. FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use its midpoint as a plain number (e.g. a stated "$68,000-$84,000" becomes "76000") at high confidence. This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use its midpoint the same way (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical figure for this specific role and location based on your own knowledge, as a plain number, and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "72000" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Today's date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}\n\nResume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- A question asking for an actual calendar date (a "Date Available" field with a date-picker widget, "When can you start?" as a literal date rather than free text, etc.) needs a real, specific date - use today's date above to compute one, per any date-related instruction in the context above (e.g. "next available Monday"); if no such instruction applies, default to two weeks from today. Format it to match whatever the field itself displays (e.g. a visible "mm/dd/yyyy" placeholder means literally mm/dd/yyyy) - never a vague phrase like "very short notice" for a field shaped like this, even though that phrasing is exactly right for an open-ended availability question asked in prose.\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): answer with a BARE NUMBER ONLY - digits and, if needed, a decimal point, nothing else: no "$", no comma, no "-" range, no words. Confirmed live: a real field for this exact question type accepted only numeral characters and a period, and a sentence-style answer ("I am fine with the salary range posted...") was silently rejected, leaving a required field empty. If a range applies (from the job description or research below), use its midpoint as a single number. FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use its midpoint as a plain number (e.g. a stated "$68,000-$84,000" becomes "76000") at high confidence. This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use its midpoint the same way (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical figure for this specific role and location based on your own knowledge, as a plain number, and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "72000" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
