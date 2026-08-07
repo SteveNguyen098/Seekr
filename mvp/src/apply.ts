@@ -1517,21 +1517,49 @@ function jdForPrompt(jobDescription: string): string {
  * needs. This one runs with an ordinary text response instead, and its
  * findings get threaded into the main prompt as grounding.
  */
+// A research answer is only usable if it actually contains a figure.
+// Without this check a polite failure ("I was unable to retrieve current
+// web search data...") was returned as a non-empty string and then
+// injected into the main prompt under the heading "use this as the primary
+// source for any open-ended salary question" - grounding an answer in
+// prose that explicitly says it has no answer.
+const SALARY_FIGURE_RE = /\$\s?\d|\d{2,3}\s?[kK]\b|\d{2,3},\d{3}/;
+
 async function researchSalaryRange(anthropic: Anthropic, jobTitle: string, jobDescription: string): Promise<string> {
   try {
     const message = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 512,
-      tools: [{ type: "web_search_20260318", name: "web_search", max_uses: 3 } satisfies Anthropic.WebSearchTool20260318],
+      // 512 was far too low and made this whole feature silently dead:
+      // measured live, an agentic search loop spends its entire budget on
+      // tool-use blocks and stops before writing any answer at all (27-37
+      // content blocks, zero non-empty text). Every "live-researched"
+      // salary was therefore actually the trained-knowledge fallback.
+      max_tokens: 4096,
+      tools: [{ type: "web_search_20260318", name: "web_search", max_uses: 5 } satisfies Anthropic.WebSearchTool20260318],
       messages: [
         {
           role: "user",
-          content: `Search the web for the current, typical salary range for this specific role, using real sources (e.g. Glassdoor, Levels.fyi, Payscale, LinkedIn Salary, Indeed, Salary.com). Job title: "${jobTitle}".\n\nJob description (for context on seniority/location/company):\n${jobDescription.slice(0, 2000)}\n\nRespond with just the estimated range as plain text (e.g. "$70,000-$85,000 per year"), plus a brief one-sentence note on what it's based on. If you can't find reliable, current data, say so plainly rather than guessing.`,
+          // The "don't write code" steer is load-bearing, not stylistic:
+          // left to its own devices the model drives web_search from inside
+          // a code-execution sandbox, which measured 3.6x slower (64s vs
+          // 18s) and burned its search allowance on retries when the
+          // sandbox call shape didn't match.
+          content: `Search the web for the current, typical salary range for this specific role, using real sources (e.g. Glassdoor, Levels.fyi, Payscale, LinkedIn Salary, Indeed, Salary.com). Job title: "${jobTitle}".\n\nJob description (for context on seniority/location/company):\n${jobDescription.slice(0, 2000)}\n\nUse the web_search tool directly - do not write or execute code.\n\nWeigh the posting's own seniority and location over a generic national average for the job title: titles like "Implementation Manager" or "Analyst" span wildly different levels, and an aggregate that mixes them will overshoot a mid-level role. State the range that fits THIS posting.\n\nRespond with just the estimated range as plain text (e.g. "$70,000-$85,000 per year"), plus a brief one-sentence note on what it's based on. If you can't find reliable, current data, say so plainly rather than guessing.`,
         },
       ],
     });
-    const textBlock = message.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-    return textBlock?.text?.trim() || "";
+    // Join every text block rather than taking one. Measured: the answer
+    // arrives split across several text blocks interleaved with search
+    // results (7 non-empty blocks in a real run), with the actual range in
+    // an early one and only a trailing "Note: ..." caveat in the last - so
+    // taking either the first or the last block alone loses the number.
+    const text = message.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text.trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    return SALARY_FIGURE_RE.test(text) ? text : "";
   } catch {
     // Not essential to the run - if the search fails for any reason (API
     // hiccup, tool unavailable), fall back silently to the existing
@@ -2290,10 +2318,25 @@ export async function fillCurrentPage(
     // (the JD stated $60,000-$72,000, but a live-researched $58,000-$85,000
     // got used instead, backwards from what should always win).
     const hasOpenEndedSalaryQuestion = toAnswer.some((f) => SALARY_OPEN_ENDED_RE.test(f.label));
+    const jdStatesSalary = JD_HAS_SALARY_RE.test(jobDescription);
     const salaryResearch =
-      hasOpenEndedSalaryQuestion && !JD_HAS_SALARY_RE.test(jobDescription)
-        ? await researchSalaryRange(anthropic, jobTitle, jobDescription)
-        : "";
+      hasOpenEndedSalaryQuestion && !jdStatesSalary ? await researchSalaryRange(anthropic, jobTitle, jobDescription) : "";
+    // State where a salary answer's number came from. This whole research
+    // path was silently dead for an unknown stretch - it failed by
+    // returning "" and falling through to a trained-knowledge estimate
+    // that looks identical in the report to a researched one - so the
+    // provenance is worth saying out loud rather than leaving the reader
+    // to assume the best case. Only emitted when the posting actually
+    // asks an open-ended salary question.
+    if (hasOpenEndedSalaryQuestion) {
+      notes.push(
+        jdStatesSalary
+          ? "Salary answer: taken from the range stated in the job description itself (this always wins over research)."
+          : salaryResearch
+          ? "Salary answer: grounded in a live web search of current market data for this role."
+          : "Salary answer: live market research returned nothing usable, so this is an estimate from the model's own trained knowledge - worth a look before submitting."
+      );
+    }
 
     const answers = await answerWithClaude(anthropic, resume, jobDescription, context, toAnswer, false, salaryResearch);
     const hasAnswer = (f: AnswerableField, a: ClaudeAnswer | undefined) =>
