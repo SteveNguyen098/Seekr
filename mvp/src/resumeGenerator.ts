@@ -210,13 +210,18 @@ const REPLACEMENT_TOOL: Anthropic.Tool = {
           type: "object",
           properties: {
             index: { type: "number" },
+            jdEvidence: {
+              type: "string",
+              description:
+                "One short phrase quoted or closely paraphrased from THIS job description that drove your choice of order/content for this specific section - e.g. \"posting repeatedly emphasizes 'client onboarding' and 'kickoff meetings'\". Required so a re-ranked list is traceable to this posting's own wording, not a remembered pattern for roles that look like this one. If this section's output is genuinely unchanged from the current content, state briefly why that's still the best fit for this specific posting rather than leaving this blank.",
+            },
             text: {
               type: "string",
               description:
                 "Replacement text only - no brackets. Match the original content's format (a prose paragraph stays a prose paragraph, a comma-separated list stays a comma-separated list).",
             },
           },
-          required: ["index", "text"],
+          required: ["index", "jdEvidence", "text"],
         },
       },
     },
@@ -284,7 +289,7 @@ async function generateReplacements(
       const notes: string[] = [];
       if (looksLikeList(p.originalContent)) {
         notes.push(
-          "[LIST: reorder these existing items by relevance to this job - the most relevant items first. Even when nothing new can be safely added, an unchanged order is only acceptable if it's already the best order for this specific job; don't default to leaving it untouched.]"
+          "[LIST: reorder these existing items by relevance to this job - the most relevant items first. Even when nothing new can be safely added, an unchanged order is only acceptable if it's already the best order for this specific job; don't default to leaving it untouched. Base the order on THIS job description's own specific language and emphasis (its exact wording, which responsibilities it dwells on, its job title) - not a generic sense of what a role shaped like this one 'usually' prioritizes. Two similar roles genuinely can and often should land on a similar order when their postings genuinely emphasize similar things - a shared item pool and overlapping results across similar jobs is expected and fine, not a problem to correct for. What's not fine is reaching for a familiar, remembered ordering instead of actually re-deriving it from this posting's own text; if you can't point to this job description's own wording as the reason for the order, re-derive it.]"
         );
       }
       if (INDEPENDENT_PROJECT_RE.test(p.originalContent)) {
@@ -338,10 +343,18 @@ ${placeholdersBlock}`,
   });
 
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-  const input = toolUse?.input as { replacements: { index: number; text: string }[] } | undefined;
+  const input = toolUse?.input as { replacements: { index: number; jdEvidence?: string; text: string }[] } | undefined;
   const result = placeholders.map((p) => p.originalContent);
   for (const r of input?.replacements ?? []) {
     if (r.index >= 0 && r.index < result.length && r.text) result[r.index] = r.text;
+    // Printed rather than threaded through the return type - this exists to
+    // make "did it actually re-derive this from the posting, or reuse a
+    // familiar pattern" spot-checkable by reading the run's own output,
+    // without a bigger refactor to carry evidence through
+    // generateTailoredResume()'s and index.ts's own return/report shapes.
+    if (r.index >= 0 && r.index < placeholders.length && r.jdEvidence) {
+      console.log(`  -> "${placeholders[r.index].sectionHeader}" grounded in: ${r.jdEvidence}`);
+    }
   }
   // Deterministic terminology normalization: guarantee the CRM wording is
   // identical across the skills sections and across runs, no matter how the

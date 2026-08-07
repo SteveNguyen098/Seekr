@@ -544,6 +544,25 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           selector = `[data-seekr-field="${i}"]`;
         }
 
+        // A native <select> can ALSO be a fully decorative shell around a
+        // custom popup-menu picker rather than a real form control -
+        // confirmed live on BambooHR/Fabric's State/Country fields:
+        // readonly, aria-hidden or 0x0, holding a single blank <option>,
+        // with the actual picker a sibling button (aria-haspopup="true")
+        // that opens a searchable popup menu. selectOption() has nothing
+        // real to select from the native element itself. Routed through
+        // the same isCombobox path as a role=combobox widget below -
+        // selectComboboxOption() detects this exact shape and drives the
+        // popup instead of treating it like an ordinary <select>.
+        const isDecorativeSelect =
+          tag === "SELECT" &&
+          el.hasAttribute("readonly") &&
+          (el.getAttribute("aria-hidden") === "true" ||
+            (() => {
+              const r = el.getBoundingClientRect();
+              return r.width === 0 || r.height === 0;
+            })());
+
         // Custom widgets (react-select, intl-tel-input, etc.) expose a plain
         // <input> as a search/typeahead box, but the real selection lives in
         // separate JS state - a raw .fill() looks like it worked, then gets
@@ -552,7 +571,8 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         const isCombobox =
           el.getAttribute("role") === "combobox" ||
           el.getAttribute("aria-autocomplete") === "list" ||
-          el.getAttribute("aria-haspopup") === "true";
+          el.getAttribute("aria-haspopup") === "true" ||
+          isDecorativeSelect;
 
         // data-testid is a common automation-hook convention (confirmed
         // live: Rippling's file-upload widgets have empty id/name/
@@ -961,6 +981,182 @@ async function clickChoiceButton(ctx: FormContext, inputSelector: string, candid
 }
 
 /**
+ * Drives a decorative-select-shell field (see isDecorativeSelect in
+ * discoverFields) - confirmed live on BambooHR/Fabric's State/Country
+ * fields. The native <select> itself can't be clicked (it fails
+ * Playwright's actionability check - it's 0x0/hidden) or driven via
+ * selectOption() (its one <option> is blank), so this finds the real
+ * sibling trigger button via aria-haspopup proximity and opens IT instead.
+ * Confirmed live: a synthetic .click() dispatched through evaluate() on
+ * that button does NOT open the menu - it needs a genuine Playwright
+ * click. Once open, options render as plain leaf <div>s inside
+ * ".fab-MenuVessel__list" with no ARIA role at all, so they're matched by
+ * their own text via the same optionTextMatches() used elsewhere rather
+ * than any role/listbox-based lookup. Returns the picked option's real
+ * text if selection was confirmed to land (checked via the trigger
+ * button's own display text, not just that a click was dispatched), or
+ * null otherwise.
+ */
+let fabricTriggerSeq = 0;
+
+/**
+ * Opens a Fabric decorative-select's real popup menu and returns selectors
+ * for its trigger and its own scoped option list, or null if it couldn't be
+ * opened. Shared by the read-options and pick-an-option paths so both agree
+ * on how a menu is identified.
+ *
+ * Every Fabric select's trigger button advertises its own menu's id via
+ * data-menu-id, and the menu vessel that opens carries the SAME
+ * data-menu-id. That pairing is load-bearing: Fabric keeps only one vessel
+ * mounted at a time and repopulates it asynchronously, so identifying "the
+ * menu" by visibility instead means a freshly-clicked trigger can hand back
+ * the PREVIOUS field's still-rendered options. Reproduced deterministically
+ * - opening Country right after picking State found a visible,
+ * correctly-sized list still full of "Alabama, Alaska, American Samoa...",
+ * and every candidate then correctly failed to match. Waiting for the
+ * contents to merely *change* doesn't fix it either (a successful prior
+ * pick closes the menu, so "changed from nothing" is trivially true of the
+ * stale contents the instant they reappear) - the id pairing is what
+ * actually distinguishes them.
+ */
+async function openFabricMenu(
+  ctx: FormContext,
+  selectSelector: string
+): Promise<{ triggerSelector: string; listSelector: string } | null> {
+  // The marker value must be unique per call, not a constant. These
+  // trigger buttons carry no id of their own, so a fixed
+  // data-seekr-trigger="1" ends up on EVERY Fabric trigger touched during
+  // a run, and the resulting selector then matches the first one in the
+  // DOM rather than this field's - confirmed live as the real reason
+  // Country failed while State succeeded: Country's click was landing on
+  // State's already-marked trigger, reopening State's menu, whose options
+  // (correctly) contain no "United States".
+  fabricTriggerSeq += 1;
+  const marker = `seekr-fab-trigger-${fabricTriggerSeq}`;
+  const ids = await ctx
+    .$eval(
+      selectSelector,
+      (el, markerValue) => {
+        const wrapper = el.closest(".fab-Select") || el.parentElement;
+        const btn = wrapper?.querySelector('button[aria-haspopup="true"]') as HTMLElement | null;
+        if (!btn) return null;
+        btn.setAttribute("data-seekr-trigger", markerValue);
+        return {
+          trigger: `[data-seekr-trigger="${markerValue}"]`,
+          menuId: btn.getAttribute("data-menu-id"),
+        };
+      },
+      marker
+    )
+    .catch(() => null);
+  if (!ids) return null;
+  const { trigger: triggerSelector, menuId } = ids;
+  const listSelector = menuId
+    ? `.fab-MenuVessel[data-menu-id="${menuId.replace(/"/g, '\\"')}"] .fab-MenuVessel__list`
+    : ".fab-MenuVessel__list";
+
+  const opened = await ctx.click(triggerSelector, { timeout: 3000 }).then(() => true).catch(() => false);
+  if (!opened) return null;
+
+  // Wait for THIS field's own menu to actually be on screen, rather than a
+  // fixed delay that races the repopulate described above.
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const ready = await ctx
+      .$eval(listSelector, (l) => {
+        const r = l.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      })
+      .catch(() => false);
+    if (ready) return { triggerSelector, listSelector };
+    await delay(150);
+  }
+  return null;
+}
+
+/** Reads every option text from a Fabric decorative-select's popup menu, then closes it. */
+async function harvestFabricMenuOptions(ctx: FormContext, selectSelector: string): Promise<string[]> {
+  const menu = await openFabricMenu(ctx, selectSelector);
+  if (!menu) return [];
+  const options = await ctx
+    .$$eval(menu.listSelector, (lists) => {
+      const list = lists[0];
+      if (!list) return [];
+      return Array.from(list.querySelectorAll("*"))
+        .filter((el) => el.children.length === 0 && (el.textContent || "").trim().length > 0)
+        .map((el) => (el.textContent || "").trim());
+    })
+    .catch(() => [] as string[]);
+  const stillOpen = await ctx.$eval(menu.triggerSelector, (btn) => btn.getAttribute("aria-expanded") === "true").catch(() => false);
+  if (stillOpen) await ctx.click(menu.triggerSelector, { timeout: 1500 }).catch(() => {});
+  return options;
+}
+
+async function selectFabricMenuOption(
+  ctx: FormContext,
+  selectSelector: string,
+  candidates: (string | RegExp)[]
+): Promise<string | null> {
+  const menu = await openFabricMenu(ctx, selectSelector);
+  if (!menu) return null;
+  const { triggerSelector, listSelector } = menu;
+
+  // Closes the menu by toggling the trigger again if it's still marked
+  // open, so a failed match doesn't leave it hanging over the next field.
+  // Checked via aria-expanded rather than assumed shut, since a successful
+  // pick already closes the menu on its own and re-toggling an
+  // already-closed trigger would reopen it.
+  const closeIfOpen = async () => {
+    const stillOpen = await ctx.$eval(triggerSelector, (btn) => btn.getAttribute("aria-expanded") === "true").catch(() => false);
+    if (stillOpen) await ctx.click(triggerSelector, { timeout: 1500 }).catch(() => {});
+  };
+
+  const optionTexts = await ctx
+    .$$eval(listSelector, (lists) => {
+      const list = lists[0];
+      if (!list) return [];
+      return Array.from(list.querySelectorAll("*"))
+        .filter((el) => el.children.length === 0 && (el.textContent || "").trim().length > 0)
+        .map((el) => (el.textContent || "").trim());
+    })
+    .catch(() => [] as string[]);
+
+  let pickedText: string | null = null;
+  for (const candidate of candidates) {
+    pickedText = optionTexts.find((t) => optionTextMatches(t, candidate)) ?? null;
+    if (pickedText) break;
+  }
+  if (!pickedText) {
+    await closeIfOpen();
+    return null;
+  }
+
+  const clicked = await ctx
+    .$$eval(listSelector, (lists, wanted) => {
+      const list = lists[0];
+      if (!list) return false;
+      const items = Array.from(list.querySelectorAll("*")).filter((el) => el.children.length === 0);
+      const target = items.find((el) => (el.textContent || "").trim() === wanted);
+      if (!target) return false;
+      (target as HTMLElement).click();
+      return true;
+    }, pickedText)
+    .catch(() => false);
+  if (!clicked) {
+    await closeIfOpen();
+    return null;
+  }
+
+  await delay(200);
+  const confirmed = await ctx
+    .$eval(triggerSelector, (btn) => (btn.textContent || "").trim().toLowerCase())
+    .then((text) => text.includes(pickedText!.toLowerCase()))
+    .catch(() => false);
+  if (!confirmed) await closeIfOpen();
+  return confirmed ? pickedText : null;
+}
+
+/**
  * Opens a custom combobox/react-select-style widget and clicks whichever
  * rendered option matches one of the given candidates (checked in order).
  * Typing a plain .fill() value into these gets silently discarded (see
@@ -968,11 +1164,16 @@ async function clickChoiceButton(ctx: FormContext, inputSelector: string, candid
  * Returns the option's actual text if a match was clicked, or null (and
  * closes the dropdown again) if nothing matched.
  */
-async function selectComboboxOption(
+export async function selectComboboxOption(
   ctx: FormContext,
   selector: string,
   candidates: (string | RegExp)[]
 ): Promise<string | null> {
+  const isFabricMenu = await ctx
+    .$eval(selector, (el) => el.tagName === "SELECT" && el.hasAttribute("readonly"))
+    .catch(() => false);
+  if (isFabricMenu) return selectFabricMenuOption(ctx, selector, candidates);
+
   const opened = await ctx.click(selector).then(() => true).catch(() => false);
   if (!opened) return null;
   await delay(400);
@@ -1060,6 +1261,25 @@ async function harvestComboboxOptions(
   ctx: FormContext,
   selector: string
 ): Promise<{ options: string[]; multiSelect: boolean }> {
+  // A Fabric decorative-shell select can't be clicked or read the ordinary
+  // way (see selectFabricMenuOption), so harvest via its real popup menu
+  // instead. Without this, its options reach Claude empty and it has to
+  // free-form a guess - confirmed live on "Highest Education Obtained",
+  // where Claude reasonably answered "Bachelor's Degree" while the real
+  // options were "College - Bachelor of Science" / "- Bachelor of Arts" /
+  // "- Bachelor of Fine Arts". No string-matching leniency can fix that
+  // safely: the real list distinguishes degree types the guess doesn't
+  // name, so picking one for the candidate would be inventing a fact about
+  // their education. Handing over the true list lets Claude choose the one
+  // the résumé actually supports.
+  const isFabricMenu = await ctx
+    .$eval(selector, (el) => el.tagName === "SELECT" && el.hasAttribute("readonly"))
+    .catch(() => false);
+  if (isFabricMenu) {
+    const options = await harvestFabricMenuOptions(ctx, selector);
+    return { options, multiSelect: false };
+  }
+
   const opened = await ctx.click(selector).then(() => true).catch(() => false);
   if (!opened) return { options: [], multiSelect: false };
   await delay(400);
@@ -1305,7 +1525,7 @@ async function answerWithClaude(
     messages: [
       {
         role: "user",
-        content: `${retryNotice}Today's date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}\n\nResume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- A question asking for an actual calendar date (a "Date Available" field with a date-picker widget, "When can you start?" as a literal date rather than free text, etc.) needs a real, specific date - use today's date above to compute one, per any date-related instruction in the context above (e.g. "next available Monday"); if no such instruction applies, default to two weeks from today. Format it to match whatever the field itself displays (e.g. a visible "mm/dd/yyyy" placeholder means literally mm/dd/yyyy) - never a vague phrase like "very short notice" for a field shaped like this, even though that phrasing is exactly right for an open-ended availability question asked in prose.\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): answer with a BARE NUMBER ONLY - digits and, if needed, a decimal point, nothing else: no "$", no comma, no "-" range, no words. Confirmed live: a real field for this exact question type accepted only numeral characters and a period, and a sentence-style answer ("I am fine with the salary range posted...") was silently rejected, leaving a required field empty. If a range applies (from the job description or research below), use its midpoint as a single number. FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use its midpoint as a plain number (e.g. a stated "$68,000-$84,000" becomes "76000") at high confidence. This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use its midpoint the same way (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical figure for this specific role and location based on your own knowledge, as a plain number, and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "72000" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
+        content: `${retryNotice}Today's date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}\n\nResume:\n${resume.text}\n\nJob description:\n${jdForPrompt(jobDescription)}\n\n${contextBlocks}${salaryResearchBlock}\n\nFill in these application form fields. Guidance:\n- A question asking for an actual calendar date (a "Date Available" field with a date-picker widget, "When can you start?" as a literal date rather than free text, etc.) needs a real, specific date - use today's date above to compute one, per any date-related instruction in the context above (e.g. "next available Monday"); if no such instruction applies, default to two weeks from today. Format it to match whatever the field itself displays (e.g. a visible "mm/dd/yyyy" placeholder means literally mm/dd/yyyy) - never a vague phrase like "very short notice" for a field shaped like this, even though that phrasing is exactly right for an open-ended availability question asked in prose.\n- Salary/compensation questions come in two shapes, answered differently:\n  - "Do you accept/agree to the salary or range listed in this posting?" (yes/no framing tied to a range already stated in the job description): answer "Yes" with HIGH confidence whenever the job description lists a salary or range. Submitting this application already implies the range has been seen and is acceptable - this is not a guess.\n  - "What is your desired/expected salary?" (asking the candidate to state a number): answer with a BARE NUMBER ONLY - digits and, if needed, a decimal point, nothing else: no "$", no comma, no "-" range, no words. Confirmed live: a real field for this exact question type accepted only numeral characters and a period, and a sentence-style answer ("I am fine with the salary range posted...") was silently rejected, leaving a required field empty. If a range applies (from the job description or research below), use its midpoint as a single number. FIRST check the actual job description text above for a stated salary or range (it doesn't have to be in a dedicated salary field - some postings just state it in the body text) - if it's there, use its midpoint as a plain number (e.g. a stated "$68,000-$84,000" becomes "76000") at high confidence. This always wins over anything else below, including live research, even if a range you find some other way looks different. Otherwise, if live salary research was provided above, use its midpoint the same way (high confidence - it's real current data, not a guess). If neither is available, give your best-estimate typical figure for this specific role and location based on your own knowledge, as a plain number, and mark confidence "low" since it's an estimate. If you're not confident even estimating, default to "72000" and mark confidence "low".\n- "Why are you interested in this role/company" or similar company-specific questions: write a grounded, specific 2-4 sentence answer using concrete details from the job description (including any "About [Company]" section) and the resume's relevant experience. Avoid generic, templated-sounding language - it should be clearly specific to this exact company and role, not something that could be pasted into any application.\n- Everything else: concise and truthful, based only on the resume and the context above.\n- When picking from a list of options about a VERIFIABLE CREDENTIAL (degree type, certification, licence), never substitute a different specific credential than the one the resume actually states. Confirmed live: a resume stating a B.B.A. was answered "College - Bachelor of Arts" because the list offered BA/BFA/BS but no BBA - a factual misstatement of the candidate's actual degree on a real application. If the exact credential isn't offered, prefer a generic catch-all option ("Other") when one exists, otherwise pick the closest option and mark confidence "low". Being vaguer than the truth is fine; being specifically wrong is not.\n- If a question requires performing an actual external, real-world action that can't be done from the resume/context/description above - visiting a live URL and reporting a real-time result (a speed test, a live price/quote lookup), a timed skills assessment, uploading a specific file, making a phone call - do NOT invent a specific, plausible-sounding result. A fabricated but checkable data point (a made-up speed test reading, a made-up quiz score) is worse than an honest gap: it can be verified and read as dishonest. For these ONLY, respond with exactly this value: "${CANNOT_VERIFY_MARKER}" - this is the one exception to the required-field rule below, and applies regardless of whether the field is marked [REQUIRED].\n- Fields marked [REQUIRED] must always get a real, non-empty best-effort value - never decline by returning an empty string, even if you have to extrapolate. Set confidence to "low" whenever you had to extrapolate rather than answer from something concrete. Fields marked [optional] may get an empty string if you can't confidently answer at all.\n\n${fieldsBlock}`,
       },
     ],
   });
@@ -1427,13 +1647,47 @@ async function fillTextVerified(
   lowConfidence = false,
   filledSelectors?: FilledTextRecord[]
 ): Promise<boolean> {
-  const ok = await ctx.fill(selector, value).then(() => true).catch(() => false);
+  let usedSelector = selector;
+  let ok = await ctx.fill(selector, value).then(() => true).catch(() => false);
+  if (!ok) {
+    // The name-attribute preference in discoverFields() covers most
+    // selector staleness (confirmed live on BambooHR/Fabric, whose ids
+    // regenerate on nearly every field interaction elsewhere on the same
+    // page), but a field with no `name` attribute at all - confirmed live
+    // on that same platform's "Date Available" field - has nothing stable
+    // to have preferred in the first place, so it's still exposed to the
+    // exact same staleness. Last resort: re-discover fresh and find the
+    // same field again by its own label, then retry once against whatever
+    // selector it resolves to now.
+    const rediscovered = await discoverFields(ctx)
+      .then((fresh) => fresh.find((f) => f.label === label && f.tag !== "SELECT" && !f.isCombobox))
+      .catch(() => undefined);
+    if (rediscovered) {
+      ok = await ctx.fill(rediscovered.selector, value).then(() => true).catch(() => false);
+      if (ok) usedSelector = rediscovered.selector;
+    }
+  }
   if (!ok) {
     skipped.push({ label, reason: `failed to fill field "${selector}"`, required });
     return false;
   }
   await delay(150);
-  const persisted = await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => "");
+  let persisted = await ctx.$eval(usedSelector, (el) => (el as HTMLInputElement).value).catch(() => null);
+  if (persisted === null) {
+    // Same staleness, caught this time between the fill succeeding and the
+    // very next line reading it back - confirmed live this window is real,
+    // not theoretical (Address's id had already changed by the time its own
+    // fill *attempt* ran, let alone by a follow-up read a moment later).
+    const rediscovered = await discoverFields(ctx)
+      .then((fresh) => fresh.find((f) => f.label === label && f.tag !== "SELECT" && !f.isCombobox))
+      .catch(() => undefined);
+    if (rediscovered) {
+      usedSelector = rediscovered.selector;
+      persisted = await ctx.$eval(usedSelector, (el) => (el as HTMLInputElement).value).catch(() => "");
+    } else {
+      persisted = "";
+    }
+  }
   // Some widgets auto-format a plain numeral as it's entered (a thousands
   // separator inserted on input/blur) - confirmed live on a Workable salary
   // field, where "76000" persisted correctly as "76,000" but the exact-match
@@ -1452,7 +1706,7 @@ async function fillTextVerified(
     return false;
   }
   filled.push({ label, value, generated, lowConfidence: generated && lowConfidence });
-  filledSelectors?.push({ selector, label, value, required, filledIndex: filled.length - 1 });
+  filledSelectors?.push({ selector: usedSelector, label, value, required, filledIndex: filled.length - 1 });
   return true;
 }
 
@@ -1767,7 +2021,16 @@ export async function fillCurrentPage(
       // "decline to answer" style option rather than guessing at or
       // leaving blank a protected-category question. Never persisted
       // anywhere beyond this run's in-memory report.
-      if (field.tag === "SELECT") {
+      // isCombobox checked BEFORE tag === "SELECT" - a decorative-shell
+      // select (see isDecorativeSelect above) is also tag === "SELECT", and
+      // checking that first would route it into selectOption() against a
+      // <select> with a single blank option, the same broken path this
+      // whole shape exists to avoid.
+      if (field.isCombobox) {
+        const picked = await selectComboboxOption(formCtx, field.selector, [DECLINE_RE]);
+        if (picked) filled.push({ label: field.label, value: picked });
+        else skipped.push({ label: field.label, reason: "voluntary demographic/EEO field - no decline option found, left for you to complete", required: field.required });
+      } else if (field.tag === "SELECT") {
         const match = field.options.find((o) => DECLINE_RE.test(o));
         if (match) {
           const ok = await formCtx.selectOption(field.selector, { label: match }).then(() => true).catch(() => false);
@@ -1776,10 +2039,6 @@ export async function fillCurrentPage(
         } else {
           skipped.push({ label: field.label, reason: "voluntary demographic/EEO field - no decline option found, left for you to complete", required: field.required });
         }
-      } else if (field.isCombobox) {
-        const picked = await selectComboboxOption(formCtx, field.selector, [DECLINE_RE]);
-        if (picked) filled.push({ label: field.label, value: picked });
-        else skipped.push({ label: field.label, reason: "voluntary demographic/EEO field - no decline option found, left for you to complete", required: field.required });
       } else {
         skipped.push({ label: field.label, reason: "voluntary demographic/EEO field, left for you to complete", required: field.required });
       }
@@ -1938,7 +2197,10 @@ export async function fillCurrentPage(
       // comparison is, because it doesn't correspond to anything real.
       let options = field.options;
       let multiSelect = field.multiSelect;
-      if (field.isCombobox && options.length === 0) {
+      // A Fabric decorative-shell select reports exactly one blank <option>
+      // rather than none, so a bare length check misses it and Claude never
+      // gets the real list. Treat "nothing but empty strings" as empty.
+      if (field.isCombobox && options.every((o) => !o.trim())) {
         const harvested = await harvestComboboxOptions(formCtx, field.selector);
         options = harvested.options;
         multiSelect = harvested.multiSelect;
@@ -2478,12 +2740,32 @@ async function reverifyFilledTextFields(
   const stripCommas = (s: string) => s.replace(/,/g, "").trim();
   const toRemove = new Set<number>();
   for (const rec of filledSelectors) {
-    const current = await ctx.$eval(rec.selector, (el) => (el as HTMLInputElement).value).catch(() => undefined);
+    let selector = rec.selector;
+    const current = await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => undefined);
     if (current !== undefined && stripCommas(current) === stripCommas(rec.value)) continue;
 
-    const refilled = await ctx.fill(rec.selector, rec.value).then(() => true).catch(() => false);
+    let refilled = await ctx.fill(selector, rec.value).then(() => true).catch(() => false);
+    // Same staleness fillTextVerified() already retries around, showing up
+    // here too - confirmed live on BambooHR/Fabric's "Date Available"
+    // field, which has no `name` attribute to have been given a stable
+    // selector in the first place: it re-resolved fine mid-run via this
+    // same fallback, then went stale *again* by the time this much-later
+    // re-check ran, having had many more fields' worth of re-renders to
+    // accumulate in between. Re-discovering fresh by label one more time
+    // here is cheap insurance against reporting a field as "reset" when
+    // it's actually just this function's own selector reference that's out
+    // of date.
+    if (!refilled) {
+      const rediscovered = await discoverFields(ctx)
+        .then((fresh) => fresh.find((f) => f.label === rec.label && f.tag !== "SELECT" && !f.isCombobox))
+        .catch(() => undefined);
+      if (rediscovered) {
+        selector = rediscovered.selector;
+        refilled = await ctx.fill(selector, rec.value).then(() => true).catch(() => false);
+      }
+    }
     const persisted =
-      refilled && stripCommas(await ctx.$eval(rec.selector, (el) => (el as HTMLInputElement).value).catch(() => "")) === stripCommas(rec.value);
+      refilled && stripCommas(await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => "")) === stripCommas(rec.value);
     if (persisted) continue;
 
     toRemove.add(rec.filledIndex);
