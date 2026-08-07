@@ -700,8 +700,26 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           // <label>Gender</label> <input type="radio">... </fieldset>.
           // This is a real associated label, unlike each individual
           // option's own label ("Male") captured above as `label`.
+          // <legend> is checked FIRST, and is the standards-correct answer:
+          // it is *the* element HTML defines for a fieldset's caption, so a
+          // properly-marked-up radio group puts its question there rather
+          // than in a <label>. Confirmed live on BambooHR/Fabric, where
+          // every Yes/No question is <fieldset><legend>QUESTION</legend>
+          // <div><RadioGroup>...</div></fieldset>. Missing it was not a
+          // harmless "no label found" - it fell through to the proximity
+          // walk below, which starts at the fieldset and reads its
+          // *previous sibling*: the entire preceding question's block. That
+          // silently shifted every question's text one group late, so the
+          // form's three Yes/No questions were each answered with the
+          // previous question's intent. Measured consequence on a real
+          // posting: "Were you referred by a current Euna employee?"
+          // inherited the label of a "willing to work in the office
+          // 3 days/week?" question and was answered "Yes" - a false claim,
+          // flatly contradicted by the "N/A" this same run put in the two
+          // referrer-name fields. A wrong-but-plausible answer is far worse
+          // than a blank one, since nothing about the report looks off.
           const fieldset = el.closest("fieldset");
-          const directLabel = fieldset?.querySelector(":scope > label");
+          const directLabel = fieldset?.querySelector(":scope > legend, :scope > label");
           groupQuestion = directLabel?.textContent?.trim() || "";
           if (!groupQuestion) {
             // Fall back to the same DOM-proximity approach used for
@@ -711,8 +729,17 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             // group's shared question, not this one option's own text.
             let node: Element | null = fieldset || el;
             for (let i = 0; i < 8 && node && !groupQuestion; i++) {
-              const text = node.previousElementSibling?.textContent?.trim() || "";
-              if (text.length > 2 && text.length < 300) groupQuestion = text;
+              const prev = node.previousElementSibling;
+              const text = prev?.textContent?.trim() || "";
+              // Reject a candidate that contains form controls of its own.
+              // A question's label is text; an element carrying inputs is
+              // another field's block, and reading its text attributes that
+              // field's question to this group (exactly the off-by-one
+              // described above). Better to leave groupQuestion empty - the
+              // callers already treat an unlabeled group as "leave for the
+              // human" - than to confidently answer the wrong question.
+              const isAnotherFieldsBlock = !!prev?.querySelector("input, select, textarea");
+              if (text.length > 2 && text.length < 300 && !isAnotherFieldsBlock) groupQuestion = text;
               node = node.parentElement;
             }
           }
@@ -1092,11 +1119,52 @@ async function harvestFabricMenuOptions(ctx: FormContext, selectSelector: string
   return options;
 }
 
+/** The placeholder a Fabric select shows when nothing is chosen ("–Select–"). */
+function isFabricPlaceholderText(text: string): boolean {
+  return /^[–—-]?\s*select\s*[–—-]?\.{0,3}$/i.test(text.trim());
+}
+
+/**
+ * The value a Fabric decorative-select is currently displaying, read from
+ * its visible trigger button - the only place the real selection shows,
+ * since the native <select> it shadows keeps a single blank <option>.
+ * Returns "" if this isn't a Fabric select or the trigger can't be found.
+ */
+async function currentFabricTriggerText(ctx: FormContext, selectSelector: string): Promise<string> {
+  return ctx
+    .$eval(selectSelector, (el) => {
+      const wrapper = el.closest(".fab-Select") || el.parentElement;
+      const btn = wrapper?.querySelector('button[aria-haspopup="true"]');
+      return btn ? (btn.textContent || "").trim() : "";
+    })
+    .catch(() => "");
+}
+
 async function selectFabricMenuOption(
   ctx: FormContext,
   selectSelector: string,
   candidates: (string | RegExp)[]
 ): Promise<string | null> {
+  // If the control already displays an acceptable value, leave it alone
+  // rather than re-picking it. This is not just an optimization: these
+  // menus can be DEPENDENT on one another, so a redundant re-selection has
+  // real destructive side effects. Measured on a real form - Country
+  // already defaults to "United States", and re-selecting it clears the
+  // State field, because the state list is derived from the chosen
+  // country. State is filled early (deterministic profile path) and
+  // Country later (AI-answer path), so "setting" Country to the value it
+  // already had was silently blanking a State that had been correctly
+  // filled moments earlier - and reporting both as filled, since each
+  // check passed at the moment it ran. Read from the trigger button
+  // (the visible source of truth) rather than the decorative <select>,
+  // whose own value is meaningless here.
+  const preTrigger = await currentFabricTriggerText(ctx, selectSelector);
+  if (preTrigger && !isFabricPlaceholderText(preTrigger)) {
+    for (const candidate of candidates) {
+      if (optionTextMatches(preTrigger, candidate)) return preTrigger;
+    }
+  }
+
   const menu = await openFabricMenu(ctx, selectSelector);
   if (!menu) return null;
   const { triggerSelector, listSelector } = menu;
@@ -2380,7 +2448,63 @@ export async function fillCurrentPage(
   }
 
   const finalFilled = await reverifyFilledTextFields(formCtx, filledSelectors, filled, skipped);
+  await reverifyFabricSelections(formCtx, finalFilled, skipped, notes);
   return { filled: finalFilled, skipped, notes };
+}
+
+/**
+ * Re-checks every Fabric decorative-select that was reported filled, and
+ * repairs it if something later in the run silently cleared it.
+ *
+ * The idempotent guard in selectFabricMenuOption prevents the one measured
+ * cause (re-selecting Country, which derives State, when Country already
+ * held the wanted value), but that only helps when the parent already
+ * happened to be right. A candidate outside the default country would
+ * still legitimately change Country and still wipe State. Nothing in the
+ * DOM declares which of these menus depend on which, so rather than
+ * hard-coding a Country-before-State ordering that only covers the pair
+ * that happened to surface first, this verifies the end state and fixes
+ * whatever actually broke - the same "verify it landed, don't trust that
+ * it was dispatched" rule the text fields already get from
+ * reverifyFilledTextFields, extended to the one other field shape whose
+ * value can be destroyed by an unrelated later interaction.
+ *
+ * Runs after the text pass so a repair here can't be undone by one there.
+ */
+async function reverifyFabricSelections(
+  ctx: FormContext,
+  filled: FillReport["filled"],
+  skipped: FillReport["skipped"],
+  notes: string[]
+): Promise<void> {
+  const fields = await discoverFields(ctx).catch(() => [] as DiscoveredField[]);
+  for (const field of fields) {
+    if (!field.isCombobox) continue;
+    const record = filled.find((f) => f.label === field.label);
+    if (!record) continue;
+
+    const current = await currentFabricTriggerText(ctx, field.selector);
+    // "" means this isn't a Fabric-style select at all (no trigger button),
+    // so there's nothing this pass can meaningfully check - leave it be.
+    if (!current) continue;
+    if (!isFabricPlaceholderText(current) && optionTextMatches(current, record.value)) continue;
+
+    const repicked = await selectFabricMenuOption(ctx, field.selector, [record.value]);
+    if (repicked) {
+      notes.push(`"${field.label.slice(0, 60)}" was cleared by a later interaction on this page and has been re-selected.`);
+      continue;
+    }
+    // Couldn't repair it - stop claiming it's filled. A wrong "filled"
+    // here is worse than a skip: it's a required field the report says is
+    // done, so nobody looks at it before submitting.
+    const idx = filled.indexOf(record);
+    if (idx !== -1) filled.splice(idx, 1);
+    skipped.push({
+      label: field.label,
+      reason: `was selected earlier but got cleared by a later interaction on this page (dependent dropdown) and could not be re-selected - please set "${record.value}" manually`,
+      required: field.required,
+    });
+  }
 }
 
 // Advance controls. NEXT_RE is anchored: a real Oracle HCM page carries a
