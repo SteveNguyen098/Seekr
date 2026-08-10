@@ -617,6 +617,26 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           'ai-assistant-container, ai-assistant-skip-navigation-link, [id^="oda-"], [class*="oda-dialog"]'
         );
 
+        // Cookie/consent-manager UI is never part of an application form,
+        // but its controls are real <input>s and get discovered like any
+        // other. Measured live on a Kforce posting: OneTrust's preference
+        // centre stays mounted (hidden) even after its banner is dismissed,
+        // so its nine toggles - "Targeting Cookies", "Performance
+        // Cookies", "Cookie list search", four unlabelled "checkbox label"
+        // entries - were the ONLY fields discovered on the page. That's
+        // worse than noise: findFormContext picks whichever context holds
+        // the most fields, so the consent panel was selected as "the
+        // form", and the zero-size fail-open rule then had the run
+        // ticking cookie preferences while the real application sat
+        // untouched. Scoped to the well-known consent platforms' own
+        // container ids/classes rather than to matching on the word
+        // "cookie", which would also catch a legitimate question that
+        // merely mentions cookies.
+        const inConsentManager = !!el.closest(
+          '#onetrust-consent-sdk, #onetrust-banner-sdk, #onetrust-pc-sdk, [class^="ot-sdk"], [class*=" ot-sdk"], ' +
+            '#CybotCookiebotDialog, .osano-cm-window, #truste-consent-track, .qc-cmp2-container, #usercentrics-root, .cookie-consent, #cookie-consent'
+        );
+
         // Two distinct ways a real ATS wires a visible custom-styled control
         // to an aria-hidden native input: aria-labelledby pointing at the
         // visible text (Oracle's privacy checkbox, Rippling's SMS radios),
@@ -688,6 +708,9 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         } else if (inAiWidget) {
           skipAlways = true;
           skipReason = "part of the page's AI-assistant widget, not the application form";
+        } else if (inConsentManager) {
+          skipAlways = true;
+          skipReason = "part of the page's cookie/consent manager, not the application form";
         }
 
         const groupName = type === "radio" ? el.getAttribute("name") || "" : "";
@@ -2559,7 +2582,18 @@ async function reverifyFabricSelections(
 // therefore ended one step short of the actual application. It is safe to
 // click: verifying an emailed code advances a gate, it never submits an
 // application, and SUBMIT_RE below is still checked first regardless.
-const NEXT_RE = /^(next|continue|save (and|&) continue|save (and|&) next|verify)$/i;
+//
+// "continue to (the) application" / "proceed to (the) application" are
+// spelled out as whole alternatives rather than relaxing the anchor to a
+// bare /continue/: measured live on a Paycom-hosted posting whose
+// pre-application step ends in a button reading exactly "Continue To
+// Application", which the anchored pattern missed, so a run that had
+// correctly filled the popup then reported "no Next/Continue control" and
+// stopped one click short of the actual application. Keeping every
+// alternative fully anchored preserves the Oracle "Continue Working"
+// protection that motivated the anchoring in the first place.
+const NEXT_RE =
+  /^(next|continue|save (and|&) continue|save (and|&) next|verify|continue to (the )?application|proceed to (the )?application)$/i;
 // Never clicked. The tool has no code path that submits an application.
 const SUBMIT_RE = /submit|finish|send application|complete application/i;
 // Never clicked either - these abandon or reset the flow.
