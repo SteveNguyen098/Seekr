@@ -2881,7 +2881,15 @@ async function pageFieldSignature(page: Page): Promise<string> {
   return page
     .evaluate(() =>
       Array.from(document.querySelectorAll("input:not([type=hidden]), textarea, select"))
-        .map((e) => `${e.tagName}:${e.id || e.getAttribute("name") || ""}:${(e as HTMLInputElement).type || ""}`)
+        // `name` before `id`, because an id can be regenerated on every
+        // re-render while the authored name stays put. Measured on a
+        // Paycom-hosted form whose ids are UUIDs: the signature came back
+        // different every single time, so the loop concluded the page had
+        // advanced when it hadn't, and re-filled the same pre-application
+        // popup on page after page until the safety cap - reporting each
+        // pass as its own page in the results. Same regenerating-id family
+        // as the stale-selector bugs elsewhere in this file.
+        .map((e) => `${e.tagName}:${e.getAttribute("name") || e.id || ""}:${(e as HTMLInputElement).type || ""}`)
         .sort()
         .join("|")
     )
@@ -3060,11 +3068,44 @@ export async function fillApplication(
       // skip list, which only knows what *we* declined to fill.
       const errors = await readValidationErrors(page);
       const blockers = skipped.filter((s) => s.required).map((s) => s.label);
+      // A CAPTCHA raised BY the click is a distinct, common cause that
+      // "required input still missing" describes badly - confirmed live on
+      // a Paycom-hosted form where "Continue To Application" summons an
+      // hCaptcha image challenge over the popup. It isn't present before
+      // the click, so the loop's own pre-existing check can't have seen
+      // it; give it a moment to render and look again, so the report names
+      // the real blocker instead of sending the reader hunting for an
+      // empty field that doesn't exist.
+      await delay(1200);
+      const captchaAppeared = await detectCaptcha(page);
+      // detectCaptcha deliberately only fires on a *visibly rendered*
+      // challenge, so it stays quiet on the invisible reCAPTCHA badge that
+      // sits on plenty of perfectly fillable forms - that narrowness is
+      // load-bearing and shouldn't be relaxed. But when a step failed to
+      // advance AND the page hosts a bot-check at all, that's worth saying:
+      // measured on a Paycom-hosted form, hCaptcha frames are present from
+      // the moment "Continue To Application" is clicked and the visible
+      // challenge appears only some of the time, so the honest report is
+      // "this may be why", not silence or a confident claim either way.
+      const botCheckPresent =
+        !captchaAppeared &&
+        (await page
+          .evaluate(() =>
+            Array.from(document.querySelectorAll("iframe")).some((f) => /hcaptcha|recaptcha|turnstile|arkoselabs|funcaptcha/i.test(f.src || ""))
+          )
+          .catch(() => false));
       notes.push(
-        `STOPPED on page ${pageNum}: clicked "${next.text}" but the page didn't advance - almost certainly required input still missing.` +
-          (errors.length ? ` Page reported: ${errors.map((e) => `"${e}"`).join("; ")}.` : "") +
-          (blockers.length ? ` Required fields left unfilled: ${blockers.join("; ")}.` : "") +
-          (!errors.length && !blockers.length ? ` No validation text or unfilled required field found - check the screenshot.` : "")
+        captchaAppeared
+          ? `STOPPED on page ${pageNum}: clicking "${next.text}" raised a CAPTCHA / bot challenge, which this tool never attempts to solve. Everything up to this point is filled in - solve it in the open browser window and carry on by hand.`
+          : `STOPPED on page ${pageNum}: clicked "${next.text}" but the page didn't advance - almost certainly required input still missing.` +
+              (errors.length ? ` Page reported: ${errors.map((e) => `"${e}"`).join("; ")}.` : "") +
+              (blockers.length ? ` Required fields left unfilled: ${blockers.join("; ")}.` : "") +
+              (botCheckPresent
+                ? ` This page also hosts a bot-check (CAPTCHA) widget, which may be blocking the step without showing a visible challenge - check the open browser window.`
+                : "") +
+              (!errors.length && !blockers.length && !botCheckPresent
+                ? ` No validation text or unfilled required field found - check the screenshot.`
+                : "")
       );
       break;
     }
