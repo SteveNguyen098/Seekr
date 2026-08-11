@@ -253,6 +253,16 @@ export async function openApplicationForm(page: Page, jobUrl: string): Promise<v
   await page.goto(jobUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
     page.goto(jobUrl, { waitUntil: "load", timeout: 30000 })
   );
+  // Dismiss the cookie banner BEFORE hunting for Apply, not after. A
+  // consent banner is an overlay, and on several platforms it sits over
+  // the Apply control - so the click fails Playwright's actionability
+  // check, times out, and the run continues to a page where the form was
+  // never opened. Confirmed live and deterministic on a Workable posting:
+  // identical code reached 0 fields with the banner up and 22 with it
+  // dismissed first. fillApplication() dismisses it again later, which is
+  // a harmless no-op once it's already gone, and this cannot cost anything
+  // on a page that has no banner.
+  await dismissCookieBanner(page).catch(() => null);
   // Pick the first *visible* Apply control, not merely the first match.
   // page.$() returns whatever comes first in the DOM regardless of
   // visibility, and career sites routinely carry hidden duplicates (a
@@ -265,19 +275,50 @@ export async function openApplicationForm(page: Page, jobUrl: string): Promise<v
   // job page itself, so failing to find or click an Apply button is not
   // grounds for aborting. Field discovery below is the real test of whether
   // we got somewhere useful.
+  //
+  // <input> controls are matched on their `value` attribute, separately
+  // from the :has-text() selectors: an <input type="button" value="Apply
+  // Today"> has no text content at all, so :has-text() can never match it.
+  // Measured live on a Kforce posting where the ONLY control that opens
+  // the real application is exactly that shape - so the entire application
+  // was unreachable, not merely awkward to reach.
   const applyCandidates = await page
     .$$(
       APPLY_CTA_PHRASES.flatMap((p) => {
         const q = quoteForHasText(p);
-        return [`a:has-text(${q})`, `button:has-text(${q})`, `[role=button]:has-text(${q})`];
+        const attr = p.replace(/"/g, '\\"');
+        return [
+          `a:has-text(${q})`,
+          `button:has-text(${q})`,
+          `[role=button]:has-text(${q})`,
+          `input[type=submit][value*="${attr}" i]`,
+          `input[type=button][value*="${attr}" i]`,
+        ];
       }).join(", ")
     )
     .catch(() => []);
+
+  // Judge a candidate by whether the page actually changed, not by whether
+  // the click dispatched without throwing, and move on to the next one if
+  // nothing happened. Measured live on a Kforce posting carrying two
+  // visible "Apply Today" controls: the first in DOM order is a widget
+  // initiator that does nothing observable at all (no navigation, no new
+  // fields, no modal), while the second navigates to the real
+  // /ApplyOnline/ form and takes the page from 12 fields to 30. Stopping
+  // at the first click that merely succeeded meant always taking the
+  // decoy and reporting an empty form - the same "prove it landed, don't
+  // trust that it was dispatched" rule applied everywhere else in this
+  // file.
+  const fieldCount = async () => Math.max(0, ...(await Promise.all(allContexts(page).map(countFields))));
   for (const candidate of applyCandidates) {
     const usable = await candidate.isVisible().then((v) => v && candidate.isEnabled()).catch(() => false);
     if (!usable) continue;
+    const urlBefore = page.url();
+    const fieldsBefore = await fieldCount();
     const clicked = await candidate.click({ timeout: 5000 }).then(() => true).catch(() => false);
-    if (clicked) break;
+    if (!clicked) continue;
+    await delay(2500);
+    if (page.url() !== urlBefore || (await fieldCount()) > fieldsBefore) break;
   }
   // Wait for the actual application form to mount rather than a fixed
   // delay. Native Greenhouse/Lever pages render almost immediately, but
@@ -416,7 +457,25 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           // which is exactly why it's checked dead last.
           let node: Element | null = el;
           for (let i = 0; i < 8 && node && !label; i++) {
-            const text = node.previousElementSibling?.textContent?.trim() || "";
+            // .textContent includes the contents of <style>/<script>
+            // elements, which are invisible to a human but read as a long
+            // run of text here. Confirmed live on a Paycom-hosted form: a
+            // <style> block sat immediately before a question's wrapper,
+            // so the field's "label" came back as
+            // ".opt-in-hyper-link { text-decoration: underline; } ..." -
+            // CSS presented to Claude as the question to answer. Strip
+            // those subtrees (and skip the element outright if it IS one)
+            // before considering the text. Inlined rather than factored
+            // into a named helper: a named const arrow inside this
+            // evaluate callback gets an esbuild __name() wrapper that
+            // doesn't exist once the function is serialized into the page.
+            const prevEl = node.previousElementSibling;
+            let text = "";
+            if (prevEl && !["STYLE", "SCRIPT", "NOSCRIPT", "TEMPLATE"].includes(prevEl.tagName)) {
+              const clone = prevEl.cloneNode(true) as Element;
+              clone.querySelectorAll("style, script, noscript, template").forEach((n) => n.remove());
+              text = (clone.textContent || "").trim();
+            }
             // The upfront "no file selected" clear above only catches it
             // when an *earlier* signal (aria-label etc.) produced it -
             // confirmed live that this walk itself can independently land
@@ -753,7 +812,14 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             let node: Element | null = fieldset || el;
             for (let i = 0; i < 8 && node && !groupQuestion; i++) {
               const prev = node.previousElementSibling;
-              const text = prev?.textContent?.trim() || "";
+              // Same <style>/<script> exclusion as the label walk above,
+              // for the same measured reason.
+              let text = "";
+              if (prev && !["STYLE", "SCRIPT", "NOSCRIPT", "TEMPLATE"].includes(prev.tagName)) {
+                const clone = prev.cloneNode(true) as Element;
+                clone.querySelectorAll("style, script, noscript, template").forEach((n) => n.remove());
+                text = (clone.textContent || "").trim();
+              }
               // Reject a candidate that contains form controls of its own.
               // A question's label is text; an element carrying inputs is
               // another field's block, and reading its text attributes that
@@ -763,6 +829,38 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
               // human" - than to confidently answer the wrong question.
               const isAnotherFieldsBlock = !!prev?.querySelector("input, select, textarea");
               if (text.length > 2 && text.length < 300 && !isAnotherFieldsBlock) groupQuestion = text;
+              node = node.parentElement;
+            }
+          }
+
+          // Last resort: the question is an ANCESTOR's text rather than any
+          // preceding sibling's. Confirmed live on a Paycom-hosted form
+          // whose SMS-consent question ("Do you consent to receiving text
+          // communications ... via SMS ...?") is rendered as prose wrapping
+          // the Yes/No fieldset - the fieldset itself contains only "YesNo",
+          // its <legend> is empty, and every preceding sibling is either a
+          // <style> block or the previous field's block, so the walk above
+          // legitimately finds nothing.
+          //
+          // Kept deliberately tight, since an ancestor's text is the
+          // broadest possible signal: it must read like a question (contain
+          // "?"), be a sensible length, and - most importantly - the
+          // container must hold no form controls other than this group's own
+          // radios. That last check is what stops it swallowing a whole
+          // multi-field panel and attributing some other field's question
+          // to this group.
+          if (!groupQuestion && fieldset) {
+            let node: Element | null = fieldset;
+            for (let i = 0; i < 4 && node && !groupQuestion; i++) {
+              const clone = node.cloneNode(true) as Element;
+              clone.querySelectorAll("style, script, noscript, template").forEach((n) => n.remove());
+              const text = (clone.textContent || "").replace(/\s+/g, " ").trim();
+              const foreignControls = Array.from(clone.querySelectorAll("input, select, textarea")).filter(
+                (c) => (c.getAttribute("name") || "") !== groupName
+              );
+              if (foreignControls.length === 0 && text.length > 25 && text.length < 400 && text.includes("?")) {
+                groupQuestion = text;
+              }
               node = node.parentElement;
             }
           }
@@ -830,6 +928,38 @@ async function reachability(ctx: FormContext, selector: string): Promise<Reachab
       return verdict;
     })
     .catch(() => "inconclusive-offscreen" as const) as Promise<Reachability>;
+}
+
+/**
+ * A selector for one radio option that survives a re-render, built from the
+ * authored `name`+`value` pair rather than the element's id.
+ *
+ * Every radio click in this file goes through here. Discovery prefers an id
+ * for a radio (its `name` is shared by the whole group, so it isn't unique),
+ * but multiple platforms regenerate ids on each React re-render - Workable
+ * with random ids, Paycom with UUIDs, BambooHR with sequential ones - so an
+ * id captured at discovery time can stop resolving partway through a run.
+ *
+ * The failure that motivated centralising this is worth stating, because it
+ * is NOT "the click didn't happen": measured on a Paycom form, checkField()
+ * clicked the right radio, the page re-rendered, the id changed, and
+ * checkField's own verification read then threw and was caught into
+ * `false` - so a click that genuinely landed was reported as a failure, and
+ * the caller pushed a "could not select it, please do it manually" skip for
+ * a field that was in fact correctly answered. A false negative here is
+ * quietly corrosive: it sends the reader to re-check work that was already
+ * done right.
+ *
+ * Falls back to the discovered selector when name/value aren't both present
+ * (a checkbox, or a radio with no value attribute).
+ */
+function stableRadioSelector(field: DiscoveredField): string {
+  if (!field.groupName || !field.radioValue) return field.selector;
+  // Escaped for a double-quoted attribute selector. CSS.escape is a browser
+  // API and this string is built in Node, so escape the two characters that
+  // can break out of the quotes directly.
+  const attr = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `input[type="radio"][name="${attr(field.groupName)}"][value="${attr(field.radioValue)}"]`;
 }
 
 /**
@@ -1887,6 +2017,27 @@ export async function fillCurrentPage(
     const question = members[0].groupQuestion || members[0].label;
     if (SENSITIVE_RE.test(question.toLowerCase())) continue;
     if (members.length < 2 || !members[0].groupQuestion) continue;
+
+    // SMS/text-message consent asked at the GROUP level, where the question
+    // mentions text messages but each option is just a bare "Yes"/"No".
+    // The existing per-option rule further down can't fire on this shape -
+    // it needs both the text-message wording AND the decline wording on the
+    // same option label, which is true of "No, I don't consent to text
+    // messages" but not of an option literally labelled "No 2 of 2.".
+    // Confirmed live on a Paycom-hosted form. Declining is the candidate's
+    // standing instruction, so this is answered deterministically rather
+    // than sent to Claude - and it is only ever a decline, never an opt-in.
+    if (TEXT_MESSAGE_RE.test(question)) {
+      const noOption = members.find((m) => /^\s*no\b/i.test(m.label) || DECLINE_RE.test(m.label));
+      if (noOption) {
+        const ok = await checkField(formCtx, stableRadioSelector(noOption));
+        if (ok) filled.push({ label: question.slice(0, 120), value: noOption.label });
+        else skipped.push({ label: question.slice(0, 120), reason: "text-message consent - could not select the opt-out option, please decline manually", required: noOption.required });
+        for (const m of members) handledSelectors.add(m.selector);
+        continue;
+      }
+    }
+
     const anchor = members[0];
     radioGroupMembersBySelector.set(anchor.selector, members);
     toAnswer.push({
@@ -1908,7 +2059,7 @@ export async function fillCurrentPage(
     const required = members.some((m) => m.required);
     const declineOption = members.find((m) => DECLINE_RE.test(m.label));
     if (declineOption) {
-      const ok = await checkField(formCtx, declineOption.selector);
+      const ok = await checkField(formCtx, stableRadioSelector(declineOption));
       if (ok) filled.push({ label: question, value: declineOption.label });
       else skipped.push({ label: question, reason: "voluntary demographic/EEO field - could not select decline option, left for you to complete", required });
     } else {
@@ -1936,6 +2087,25 @@ export async function fillCurrentPage(
         reason: "verification code - left blank on purpose so you can enter the real one",
         required: false,
       });
+      continue;
+    }
+    // A government identity number is never filled by this tool, even if
+    // one somehow appeared in the candidate's own context files, and the
+    // rest of the page is still completed around it - the same treatment a
+    // CAPTCHA gets: stop at the one thing only the human should do rather
+    // than abandoning the whole form. Surfaced as a flow note too, not just
+    // a skip line, because a required government ID sitting empty is the
+    // single most likely reason a submission is rejected, and it should be
+    // impossible to miss in the report.
+    if (GOVERNMENT_ID_RE.test(field.label)) {
+      skipped.push({
+        label: field.label,
+        reason: "government ID number - never filled automatically, please enter this yourself before submitting",
+        required: field.required,
+      });
+      notes.push(
+        `This application asks for a government ID number ("${field.label.replace(/\s+/g, " ").slice(0, 60)}"). It was deliberately left blank - enter it yourself before submitting.`
+      );
       continue;
     }
     // Fill-time reachability. Exempt controls whose aria-labelledby points
@@ -2075,7 +2245,7 @@ export async function fillCurrentPage(
       // labeled - a candidate's own instruction: always decline text
       // message updates, so click whichever radio's own label is the
       // opt-out one.
-      const ok = await checkField(formCtx, field.selector);
+      const ok = await checkField(formCtx, stableRadioSelector(field));
       if (ok) filled.push({ label: field.label, value: field.label });
       else skipped.push({ label: field.label, reason: "text-message consent opt-out - could not select it, please select manually", required: field.required });
       continue;
@@ -2459,24 +2629,7 @@ export async function fillCurrentPage(
             skipped.push({ label: field.label, reason: `Claude answered "${value}", which doesn't match any of this question's options [${groupMembers.map((m) => m.label).join(", ")}]`, required });
             continue;
           }
-          // Re-resolve by name+value rather than reusing match.selector.
-          // The stored selector is usually `#id`, and Workable regenerates
-          // every random id on each React re-render - so by the time this
-          // runs (after all the deterministic text fills), the id captured
-          // at discovery no longer resolves and every checkField strategy
-          // fails silently against a selector matching nothing. name+value
-          // are authored and stable across renders. Measured, not assumed:
-          // radio ids were confirmed to change after merely filling the
-          // name/email fields, with the original selector resolving to null.
-          // Escaped for a double-quoted attribute selector. CSS.escape is a
-          // browser API and this string is built in Node, so escape the two
-          // characters that can break out of the quotes directly.
-          const attr = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-          const stableSelector =
-            match.groupName && match.radioValue
-              ? `input[type="radio"][name="${attr(match.groupName)}"][value="${attr(match.radioValue)}"]`
-              : match.selector;
-          const ok = await checkField(formCtx, stableSelector);
+          const ok = await checkField(formCtx, stableRadioSelector(match));
           if (ok) filled.push({ label: field.label, value: match.label, generated: true, lowConfidence });
           else skipped.push({ label: field.label, reason: `could not select "${match.label}" for this question`, required });
           continue;
@@ -2612,6 +2765,15 @@ const VERIFICATION_CODE_RE = /verification code|one-?time (code|password|pin)|\b
 // "best effort" answer is worse than none, and the required-field rule
 // that normally forbids empty answers must not apply to them.
 const VERIFICATION_FIELD_RE = /verification code|confirmation code|one-?time (code|password|pin)|\bOTP\b|security code|code digit|digit \d+ of/i;
+// Government identity numbers. Never auto-filled: the tool has no business
+// entering one on a candidate's behalf even where the value is available,
+// and a wrong one is far worse than a blank. Confirmed live on a
+// Paycom-hosted application that reaches this point in an otherwise
+// ordinary long form. Deliberately does not include a bare "\bSIN\b" - too
+// many false positives against ordinary words - so Canadian forms spelling
+// it out are matched by the phrase instead.
+const GOVERNMENT_ID_RE =
+  /social security\s*(number|no\.?|#)?|\bSSN\b|social insurance number|national insurance number|\bNINO\b|passport number|driver'?s? licen[cs]e number|tax file number/i;
 const MAX_PAGES = 10;
 
 /** Clicks "Reject All Non-Essential" (or the closest decline) on a cookie banner. */
