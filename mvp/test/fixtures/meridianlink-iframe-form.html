@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+The embedded ATS form for meridianlink-iframe-host.html. Not a test case on
+its own - it exists to be framed. Four fields, so it beats the host page's two
+decoys on count and findFormContext has to actually choose it.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Embedded application form</title>
+  </head>
+  <body>
+    <form>
+      <label for="first">First name</label>
+      <input id="first" name="first_name" type="text" required />
+
+      <label for="last">Last name</label>
+      <input id="last" name="last_name" type="text" required />
+
+      <label for="app-email">Email</label>
+      <input id="app-email" name="email" type="email" required />
+
+      <label for="why">Why are you interested in this role?</label>
+      <textarea id="why" name="why_interested"></textarea>
+    </form>
+  </body>
+</html>

@@ -9,7 +9,14 @@ contextBridge.exposeInMainWorld("seekr", {
   stop: () => ipcRenderer.invoke("stop"),
   reset: () => ipcRenderer.invoke("reset"),
   on: (channel, cb) => {
-    const allowed = ["run-started", "run-output", "run-awaiting-input", "run-finished"];
+    const allowed = [
+      "queue-started",
+      "job-started",
+      "run-output",
+      "run-awaiting-input",
+      "job-finished",
+      "queue-finished",
+    ];
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_e, payload) => cb(payload));
   },
 });

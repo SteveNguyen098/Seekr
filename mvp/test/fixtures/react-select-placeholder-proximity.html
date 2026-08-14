@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+BUG: generic UI chrome could still become a label - via a different route.
+
+The existing clear guards the aria-label/placeholder cascade, so a control
+carrying aria-label="Select" falls through to the DOM-proximity walk. But the
+walk itself accepted whatever text it found, including the same word from a
+different source.
+
+Found by reading a real captured snapshot rather than by reasoning: on a
+Greenhouse posting (Mural Health), react-select renders its placeholder as a
+visible sibling <div>Select...</div>, and three screening questions came back
+labelled "Select..." having never touched the attribute cascade at all.
+
+Those three were aria-hidden and skipped anyway, so nothing was mis-answered
+there - but the SHAPE is not inherently hidden. This fixture is that shape
+with the controls live, which is the Rippling failure exactly: two contentless
+identical labels, nothing to tell the questions apart, and a wrong answer to
+one of them that reads perfectly plausible in the report.
+
+The real question text sits one level further up, exactly where the walk would
+reach if it didn't stop at the placeholder.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>react-select placeholder captured by the proximity walk</title>
+  </head>
+  <body>
+    <div class="question">
+      <div class="qtext">Are you legally authorized to work in the United States?</div>
+      <div class="rs-control">
+        <div class="rs-placeholder">Select...</div>
+        <input type="text" name="q_work_auth" />
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="qtext">Will you now or in the future require visa sponsorship?</div>
+      <div class="rs-control">
+        <div class="rs-placeholder">Select...</div>
+        <input type="text" name="q_sponsorship" />
+      </div>
+    </div>
+
+    <!-- Same shape, different chrome word, to pin that this isn't a
+         one-string special case. -->
+    <div class="question">
+      <div class="qtext">Which region are you based in?</div>
+      <div class="rs-control">
+        <div class="rs-placeholder">Search</div>
+        <input type="text" name="q_region" />
+      </div>
+    </div>
+  </body>
+</html>

@@ -79,9 +79,18 @@ button:disabled { opacity: .45; cursor: default; }
 .tag.ai { background: #2b2440; color: #c4b5fd; }
 .tag.low { background: #3a2a12; color: var(--warn); }
 .tag.req { background: #3a1f1f; color: #fca5a5; }
+.tag.ok { background: #16301f; color: var(--ok); }
 
-#notes { margin-top: 14px; }
-#notes div { border-left: 3px solid var(--warn); padding: 7px 10px; background: var(--panel2); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 13px; }
+/* Queued link rows */
+.linkRow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.linkRow input { flex: 1; }
+.linkNum { flex: 0 0 14px; color: var(--dim); font-size: 12px; text-align: right; }
+.linkRow button { padding: 6px 10px; line-height: 1; color: var(--dim); }
+.addLink { margin-top: 2px; }
+.job .title .pill { margin-right: 7px; vertical-align: middle; }
+
+.notes { margin-top: 14px; }
+.notes div { border-left: 3px solid var(--warn); padding: 7px 10px; background: var(--panel2); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 13px; }
 .shots { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .shots button { font-size: 12px; }
 

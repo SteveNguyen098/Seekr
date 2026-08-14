@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+BUG: a perfectly valid job link was rejected as "not a job posting", and the
+run never started.
+
+Confirmed live on a MeridianLink careers URL. Companies that embed a
+Greenhouse/Lever/Ashby form keep the entire posting - description, Apply
+button, form - inside a cross-origin iframe, leaving the host page with only
+marketing chrome. Checking the main frame alone found no form.
+
+findFormContext must therefore pick whichever context holds the MOST fields,
+not simply the main document. This host page carries two decoy inputs (a site
+search and a newsletter signup, both real on marketing pages) so that
+"main frame has zero fields" isn't what makes the test pass - the frame has to
+genuinely win on count.
+
+This is the case that made snapshot capture hard (MHTML with subframes).
+Authored as a fixture, both sides are just files.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>MeridianLink - embedded ATS iframe</title>
+  </head>
+  <body>
+    <header>
+      <label for="site-search">Search this site</label>
+      <input id="site-search" name="site_search" type="text" />
+    </header>
+
+    <main>
+      <h1>Senior Implementation Consultant</h1>
+      <iframe src="./meridianlink-iframe-form.html" width="900" height="700" title="Application form"></iframe>
+    </main>
+
+    <footer>
+      <label for="newsletter">Subscribe to our newsletter</label>
+      <input id="newsletter" name="newsletter_email" type="email" />
+    </footer>
+  </body>
+</html>

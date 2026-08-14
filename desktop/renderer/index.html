@@ -13,15 +13,19 @@
     </header>
 
     <section class="form">
-      <label class="field">
-        <span>Paste a link &mdash; a job posting or a careers page, either works</span>
-        <input id="url" type="text" placeholder="https://..." spellcheck="false" />
-      </label>
+      <div class="field">
+        <span
+          >Paste up to 5 links &mdash; job postings or careers pages, either works. Seekr fills
+          them one at a time and leaves each browser window open for you to review.</span
+        >
+        <div id="links"></div>
+        <button id="addLink" class="ghost small addLink">+ Add another link</button>
+      </div>
 
       <div class="actions">
         <button id="run" class="primary">Run</button>
         <button id="stop" class="ghost" disabled>Stop</button>
-        <button id="reset" class="ghost" title="Close out this run (or its browser window) and start over with a new link - no need to quit the app.">New run</button>
+        <button id="reset" class="ghost" title="Close out this batch - including every browser window still open for review - and start over with new links. No need to quit the app.">New run</button>
         <span id="status" class="status">Idle</span>
       </div>
 
@@ -40,21 +44,8 @@
       <button id="continue" class="primary">Continue</button>
     </section>
 
-    <section class="results hidden" id="results">
-      <div class="job" id="job"></div>
-      <div class="cols">
-        <div>
-          <h2>Filled <span id="filledCount" class="pill"></span></h2>
-          <ul id="filled"></ul>
-        </div>
-        <div>
-          <h2>Skipped <span id="skippedCount" class="pill"></span></h2>
-          <ul id="skipped"></ul>
-        </div>
-      </div>
-      <div id="notes"></div>
-      <div id="shots" class="shots"></div>
-    </section>
+    <!-- One card is appended here per link, as each finishes filling. -->
+    <div id="results"></div>
 
     <section class="log">
       <h2>Output</h2>

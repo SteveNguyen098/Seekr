@@ -1,0 +1,59 @@
+<!doctype html>
+<!--
+Three widget shapes that all look like ordinary controls but are not, each
+confirmed live on a different platform.
+
+1. DECORATIVE <select> (BambooHR/Fabric State/Country): readonly, aria-hidden
+   or 0x0, holding a single blank <option>, with the real picker a sibling
+   button[aria-haspopup]. selectOption() has nothing real to choose from, so
+   this must route through the combobox path instead. It must ALSO survive the
+   aria-hidden skip rule, because its visible <label> partner makes it a real
+   user-facing field.
+
+2. SIBLING BUTTONS (Ashby sponsorship questions): a Yes/No question rendered
+   as two plain <button>s carrying the real option text and the actual click
+   surface, with a native input alongside for the site's own form state.
+   Without harvesting those, these routine questions were indistinguishable
+   from an ordinary checkbox and fell into the same always-skip bucket as
+   genuinely sensitive EEOC fields. Scoped to DIRECT child buttons and a small
+   count, so an unrelated "learn more" link near a checkbox isn't vacuumed up.
+
+3. type="tel" (Workable): the phone input has no id/placeholder/aria-label, so
+   its wrapping <label> - which also contains a hidden 3,000-char country-code
+   list - became the label unchecked.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Decorative select, sibling buttons, tel country list</title>
+  </head>
+  <body>
+    <div class="picker">
+      <label for="state">State</label>
+      <select id="state" name="state" readonly aria-hidden="true">
+        <option></option>
+      </select>
+      <button aria-haspopup="true">Select a state</button>
+    </div>
+
+    <div class="yesno">
+      <span id="auth-q">Are you legally authorized to work in the United States?</span>
+      <input type="checkbox" aria-labelledby="auth-q" tabindex="-1" />
+      <button>Yes</button>
+      <button>No</button>
+    </div>
+
+    <!-- An ordinary checkbox with one unrelated button nearby must NOT
+         harvest it as an option (needs >= 2 to qualify). -->
+    <div class="plain">
+      <label for="agree">I agree to the terms</label>
+      <input id="agree" type="checkbox" />
+      <button>Learn more</button>
+    </div>
+
+    <label>
+      <input type="tel" />
+      <span id="cc">Afghanistan +93 Albania +355 Algeria +213 Andorra +376 Angola +244 Argentina +54 Armenia +374 Australia +61 Austria +43 Azerbaijan +994 Bahamas +1242 Bahrain +973 Bangladesh +880 Barbados +1246 Belarus +375 Belgium +32 Belize +501 Benin +229 Bhutan +975 Bolivia +591 Botswana +267 Brazil +55 Brunei +673 Bulgaria +359 Cambodia +855 Cameroon +237 Canada +1 Chile +56 China +86 Colombia +57 Croatia +385 Cuba +53 Cyprus +357 Denmark +45 Ecuador +593 Egypt +20 Estonia +372 Ethiopia +251 Finland +358 France +33 Georgia +995 Germany +49 Ghana +233 Greece +30 Guatemala +502 Honduras +504 Hungary +36 Iceland +354 India +91 Indonesia +62 Iraq +964 Ireland +353 Israel +972 Italy +39 Jamaica +1876 Japan +81 Jordan +962 Kenya +254 Kuwait +965 Latvia +371 Lebanon +961 Libya +218 Lithuania +370 Luxembourg +352 Malaysia +60 Malta +356 Mexico +52 Monaco +377 Mongolia +976 Morocco +212 Nepal +977 Netherlands +31 New Zealand +64 Nigeria +234 Norway +47 Oman +968 Pakistan +92 Panama +507 Peru +51 Philippines +63 Poland +48 Portugal +351 Qatar +974 Romania +40 Russia +7 Saudi Arabia +966 Senegal +221 Serbia +381 Singapore +65 Slovakia +421 Slovenia +386 Somalia +252 South Africa +27 Spain +34 Sri Lanka +94 Sudan +249 Sweden +46 Switzerland +41 Syria +963 Taiwan +886 Tanzania +255 Thailand +66 Tunisia +216 Turkey +90 Uganda +256 Ukraine +380 United Arab Emirates +971 United Kingdom +44 United States +1 Uruguay +598 Venezuela +58 Vietnam +84 Yemen +967 Zambia +260 Zimbabwe +263</span>
+    </label>
+  </body>
+</html>

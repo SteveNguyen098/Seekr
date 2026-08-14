@@ -361,6 +361,15 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         const type = (el as HTMLInputElement).type || tag.toLowerCase();
         if (["hidden", "submit", "button"].includes(type)) return null;
 
+        // Generic UI chrome that is never a real question. Declared here
+        // (inside the serialized callback, not at module scope, which the
+        // page can't see) because it's needed at two different points: once
+        // against the aria-label/placeholder cascade below, and again inside
+        // the DOM-proximity walk. A regex literal is safe to hoist like this
+        // where a named arrow function would not be - esbuild wraps those in
+        // a __name() that doesn't exist once this is shipped into the page.
+        const GENERIC_LABEL_RE = /^(select|search|choose|start typing|type here|file-input)\.{0,3}$/i;
+
         // Precedence follows real ARIA semantics: aria-labelledby (points
         // at another element that holds the actual question text) outranks
         // aria-label, which outranks an associated <label>, which outranks
@@ -430,7 +439,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // check (only matches "resume"/"cv" in the id/name/label) then
         // correctly, but wrongly in outcome, left the actual resume upload
         // empty on a required field.
-        if (/^(select|search|choose|start typing|type here|file-input)\.{0,3}$/i.test(label.trim())) label = "";
+        if (GENERIC_LABEL_RE.test(label.trim())) label = "";
         // Clearing "file-input" above wasn't the end of it - confirmed
         // live, the proximity fallback below then found "Choose File*No
         // file selected" (this same widget's own button caption + status
@@ -486,7 +495,21 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             // walking to find that real label instead of settling for
             // chrome the same way a cleared-then-reset label would.
             const isFileChrome = type === "file" && /no file selected/i.test(text);
-            if (text.length > 2 && text.length < 300 && !isFileChrome) label = text;
+            // Clearing a generic aria-label/placeholder above isn't enough:
+            // this walk can land on the exact same word independently, from
+            // a *different* source. Measured on a real Greenhouse snapshot
+            // (Mural Health), where react-select renders its placeholder as
+            // a visible sibling <div>Select...</div>, so three screening
+            // questions came back labelled "Select..." having never touched
+            // the attribute cascade the clear guards. Those three happened
+            // to be aria-hidden and skipped anyway, but the shape is not
+            // inherently hidden - on a platform where such a field is live,
+            // this reproduces the Rippling failure exactly: two contentless,
+            // identical labels with nothing to tell the questions apart, and
+            // Claude answering one of them wrong. Rejecting it here lets the
+            // walk keep climbing to the real question text instead.
+            const isGenericChrome = GENERIC_LABEL_RE.test(text);
+            if (text.length > 2 && text.length < 300 && !isFileChrome && !isGenericChrome) label = text;
             node = node.parentElement;
           }
         }

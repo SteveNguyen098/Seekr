@@ -11,6 +11,7 @@ import { rankJobs, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
 import { generateTailoredResume } from "./resumeGenerator.js";
+import { captureFormSnapshot } from "./snapshot.js";
 
 function parseArgs(argv: string[]) {
   const args: Record<string, string> = {};
@@ -33,6 +34,12 @@ A --criteria file supplies target titles and screening rules in one place
 (see criteria.json). Individual flags override whatever it sets.
 Either --criteria or --titles is required when scraping a career page with
 --career-url.
+
+--snapshot <dir> freezes the opened application form to <dir>/<slug>/page.mhtml
+before any field is filled, building the regression corpus replayed by
+"npm run test:snapshots". Captured through the real pipeline because the DOM
+worth freezing only exists after the cookie banner and the Apply click; the
+capture holds the blank form, never your data.
 
 --job-url skips scraping/filtering/ranking entirely and applies directly to
 one already-known posting - for ATS platforms whose listing page isn't
@@ -144,13 +151,64 @@ const profileDir = path.resolve(args["profile"] || "./.browser-profile");
 // CAPTCHA-solving logic (there isn't any - see detectCaptcha) and won't
 // necessarily satisfy every bot-management check some sites layer on top.
 const launchArgs = ["--disable-blink-features=AutomationControlled"];
-const context = useProfile
-  ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 }, args: launchArgs })
-  : await (await chromium.launch({ headless: !headed, args: launchArgs })).newContext({ viewport: { width: 1280, height: 900 } });
-const page = context.pages()[0] ?? (await context.newPage());
-if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications persist between runs)`);
-// Closing the context also closes its browser in both modes.
-const browser = { close: () => context.close() };
+
+// --cdp-port makes a run one TAB of a shared browser rather than its own
+// window, which is how the desktop app fills a queued batch. Measured on a
+// synthetic ATS page: a second window costs ~407 MB, a second tab ~65 MB.
+//
+// The bigger reason isn't memory, though. Separate windows need separate
+// profile directories - Chromium holds a SingletonLock on a user-data-dir
+// for its window's whole lifetime, so two live windows cannot share one -
+// and separate profiles mean a verification completed for one link isn't
+// there for the next. Tabs share the host's profile, so the persistence
+// this file goes out of its way to preserve keeps working across a batch.
+//
+// Every job runs the same logic: try to attach, and launch as the host if
+// nothing is listening yet. Nobody is designated the host in advance, so a
+// batch whose first link is a dead URL doesn't lose tab-sharing for every
+// link behind it - whoever launches first simply becomes the host. Jobs are
+// started strictly one at a time, so there's no race for that role.
+//
+// Without --cdp-port this is byte-for-byte the old behaviour: no attach is
+// attempted and no debugging port is opened.
+const cdpPort = Number(args["cdp-port"]) || 0;
+
+async function openBrowser() {
+  if (cdpPort) {
+    try {
+      const shared = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`, { timeout: 5000 });
+      const ctx = shared.contexts()[0];
+      if (ctx) {
+        // No viewport is set here on purpose: a tab shares the host
+        // window's dimensions, and forcing one would resize that window
+        // out from under every other tab already open in it.
+        return { context: ctx, page: await ctx.newPage(), attached: true };
+      }
+      // Connected but no context to put a tab in - unusable, so fall
+      // through and host our own rather than proceeding half-attached.
+    } catch {
+      /* nothing listening yet (or it died) - we become the host below */
+    }
+  }
+  // Fallback and first-run path alike. --profile matters here and only
+  // here: an attached tab uses the host's profile, but a job that failed to
+  // attach *cannot* use the host's directory even if it wanted to, because
+  // that lock is exactly what it just failed to get past.
+  if (cdpPort) launchArgs.push(`--remote-debugging-port=${cdpPort}`);
+  const ctx = useProfile
+    ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 }, args: launchArgs })
+    : await (await chromium.launch({ headless: !headed, args: launchArgs })).newContext({ viewport: { width: 1280, height: 900 } });
+  return { context: ctx, page: ctx.pages()[0] ?? (await ctx.newPage()), attached: false };
+}
+
+const { context, page, attached } = await openBrowser();
+if (attached) console.log(`  -> attached to the shared browser on port ${cdpPort} (new tab, using its profile)`);
+else if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications persist between runs)${cdpPort ? `, hosting the shared browser on port ${cdpPort}` : ""}`);
+
+// Closing the context also closes its browser - which for an attached tab
+// would take down the host and every other link's tab with it. An attached
+// run therefore closes only its own page.
+const browser = { close: attached ? async () => void (await page.close().catch(() => {})) : () => context.close() };
 
 try {
   // Work out what kind of link this is, so the caller doesn't have to.
@@ -284,6 +342,15 @@ try {
 
   console.log(`\nOpening application form...`);
   await openApplicationForm(page, best.job.url);
+
+  // Bank a frozen copy of the form for the regression corpus, if asked.
+  // Placed here on purpose: the form is open but nothing has been filled, so
+  // the capture is the blank form as served and carries none of the
+  // candidate's data.
+  if (args["snapshot"]) {
+    const dir = await captureFormSnapshot(page, args["snapshot"], best.job.url, best.job.title);
+    if (dir) console.log(`  -> snapshot saved to ${dir}`);
+  }
 
   console.log(`Filling application using resume + job description...`);
   const report = await fillApplication(

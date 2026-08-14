@@ -10,6 +10,23 @@ const { spawn, execFile } = require("node:child_process");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs");
+const net = require("node:net");
+
+// One CDP port per batch, so every link's browser lands in the same window
+// as tabs. Asking the OS for a free port beats a fixed 9222: that would
+// collide with the user's own Chrome remote-debugging session, or with a
+// browser left over from a previous batch, and the new job would silently
+// attach to the wrong browser instead of its own.
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", () => resolve(0)); // fall back to one window per link
+  });
+}
 
 const MVP_DIR = path.resolve(__dirname, "..", "mvp");
 
@@ -41,9 +58,37 @@ function saveSettings() {
 }
 
 let win = null;
-let child = null;
+
+// A batch is up to MAX_QUEUE links, filled strictly one at a time. `jobs`
+// holds one record per link for the whole batch; `activeIndex` is the link
+// currently being filled. Earlier jobs are not finished - they're parked
+// (see advance()), each still holding its browser window open for review.
+const MAX_QUEUE = 5;
+let jobs = [];
+let activeIndex = -1;
+let batch = null;
 
 const PROFILE_DIR = path.resolve(MVP_DIR, ".browser-profile");
+
+// Each queued job needs its OWN browser profile, because finished windows
+// stay open while later links are still being filled. Chromium holds a
+// SingletonLock on its user-data-dir for the window's entire lifetime, so
+// launching a second persistent context against a directory whose window is
+// still open does not yield a fresh browser - it fails with "Opening in
+// existing browser session", the same breakage killProfileBrowsers() below
+// exists to clean up after.
+//
+// Slot 0 deliberately keeps the original path, so a single-link run - still
+// the common case - uses the same profile it always has and loses no stored
+// verification. Slots 1..4 only come into play once a batch is queued.
+//
+// Cost worth knowing: verification state does not follow a job across
+// slots. Two roles at the same employer in one batch can each ask for their
+// own emailed code, and a slot's first-ever use is a genuinely fresh
+// profile with no cookie history at all.
+function profileForSlot(i) {
+  return i === 0 ? PROFILE_DIR : `${PROFILE_DIR}-${i + 1}`;
+}
 
 // child.kill() only terminates the tsx/Node process - it does not take down
 // the Chromium process Playwright launches underneath it. The obvious fix,
@@ -63,6 +108,13 @@ const PROFILE_DIR = path.resolve(MVP_DIR, ".browser-profile");
 // --user-data-dir=<profileDir> on its own command line, regardless of
 // who its current OS-level parent is. Confirmed live: this finds and
 // kills the browser that taskkill /T left behind.
+//
+// The -like '*<PROFILE_DIR>*' match is a substring test, so it also catches
+// every queued slot: ".browser-profile-3" contains ".browser-profile".
+// That's exactly what's wanted here - Stop/New run/quit should clear the
+// whole batch, including review windows parked from earlier links - so no
+// per-slot variant is needed. Anything that ever wants to close ONE slot
+// would need an exact match instead.
 function killProfileBrowsers() {
   return new Promise((resolve) => {
     if (process.platform !== "win32") return resolve();
@@ -76,23 +128,31 @@ function killProfileBrowsers() {
   });
 }
 
-// Kills the CLI process itself (if still alive - it may have already
-// exited, e.g. if the browser window was closed by hand) and separately
-// sweeps for the actual browser via killProfileBrowsers(). Used for both
-// "Stop"/"New run" and on app quit, since all three can end a run while its
-// persistent-profile browser is still open.
+// Kills every CLI process in the batch - the one actively filling plus any
+// parked on the review prompt - and separately sweeps for the actual
+// browsers via killProfileBrowsers(). Used for "Stop"/"New run" and on app
+// quit, since all three can end a batch while several persistent-profile
+// browsers are still open.
 async function killActiveRun() {
-  if (child) {
+  const procs = jobs.map((j) => j.proc).filter(Boolean);
+  // Marked before killing so the close handlers these kills are about to
+  // fire can't advance the queue and start the very next link we're trying
+  // to tear down.
+  for (const j of jobs) j.advanced = true;
+  jobs = [];
+  activeIndex = -1;
+  batch = null;
+
+  for (const p of procs) {
     if (process.platform === "win32") {
-      await new Promise((resolve) => execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => resolve()));
+      await new Promise((resolve) => execFile("taskkill", ["/pid", String(p.pid), "/T", "/F"], () => resolve()));
     } else {
       try {
-        process.kill(child.pid, "SIGKILL");
+        process.kill(p.pid, "SIGKILL");
       } catch {
         /* already gone */
       }
     }
-    child = null;
   }
   await killProfileBrowsers();
 }
@@ -140,31 +200,31 @@ ipcMain.handle("open-path", async (_e, p) => {
 
 // ---- running the pipeline ------------------------------------------------
 
-// The CLI's verification pause prints this and then blocks on stdin. We
-// watch for it so the UI can surface a Continue button, and answer it by
-// writing a newline to the child's stdin - which is exactly what pressing
-// Enter in a terminal does. Nothing in the CLI needed to change for this.
+// The CLI blocks on stdin at two different points and this matches both, so
+// the UI can surface a Continue button. Answered by writing a newline to
+// the child's stdin - exactly what pressing Enter in a terminal does.
 const PAUSE_PROMPT_RE = /Press Enter once you've entered it|Press Enter to close the browser/i;
 
-ipcMain.handle("run", async (_e, opts) => {
-  if (child) return { ok: false, error: "A run is already in progress." };
+// ...but only the FINAL prompt means "this link is done being filled". The
+// other half of the match above is the mid-run verification pause, which
+// genuinely needs a human at that moment and must NOT advance the queue.
+// (It can't hang the batch forever regardless - the CLI races that prompt
+// against a timeout.)
+const FINAL_PAUSE_RE = /Press Enter to close the browser/i;
 
-  const jsonOut = path.join(os.tmpdir(), `seekr-run-${Date.now()}.json`);
-  const outDir = opts.outDir || path.join(MVP_DIR, "out", "desktop");
+ipcMain.handle("run", async (_e, opts) => {
+  if (jobs.length) return { ok: false, error: "A run is already in progress." };
+
+  const urls = (opts.urls || [opts.url])
+    .map((u) => String(u || "").trim())
+    .filter(Boolean)
+    .slice(0, MAX_QUEUE);
+  if (!urls.length) return { ok: false, error: "Paste at least one link." };
 
   const resume = settings.resume;
   if (!resume || !fs.existsSync(resume)) {
     return { ok: false, error: "No resume template set. Use Change… to pick one." };
   }
-
-  // --url lets the CLI classify the link itself, so the UI doesn't have to
-  // ask which kind it is. --criteria is harmless when the link turns out to
-  // be a single posting (it's only consulted for board runs).
-  const args = ["src/index.ts", "--url", opts.url, "--criteria", "./criteria.json"];
-  args.push("--resume", resume, "--out", outDir, "--json-out", jsonOut);
-  if (opts.headed !== false) args.push("--headed");
-
-  send("run-started", { command: `npx tsx ${args.join(" ")}` });
 
   // Run tsx's CLI directly instead of going through `npx` in a shell.
   //
@@ -184,58 +244,141 @@ ipcMain.handle("run", async (_e, opts) => {
     return { ok: false, error: `Could not find tsx at ${tsxCli}. Run "npm install" in the mvp folder.` };
   }
 
-  child = spawn(process.execPath, [tsxCli, ...args], {
+  batch = {
+    resume,
+    tsxCli,
+    // Where tailored resumes and the preview screenshot land. Renaming this
+    // folder on disk does NOT move the output: index.ts mkdir -p's whatever
+    // path it's given, so a rename silently starts a second history in a
+    // freshly recreated folder. That already happened once - "out/desktop"
+    // was renamed to this, and the next run recreated "out/desktop" and put
+    // 8 resumes there while 24 sat in the renamed one. Change the string
+    // here, not the folder on disk.
+    outDir: opts.outDir || path.join(MVP_DIR, "out", "Electron App Stuff"),
+    headed: opts.headed !== false,
+    cdpPort: await freePort(),
+  };
+  jobs = urls.map((url, index) => ({ index, url, proc: null, jsonOut: null, advanced: false }));
+
+  send("queue-started", { total: jobs.length, urls });
+  startJob(0);
+  return { ok: true };
+});
+
+function startJob(i) {
+  const job = jobs[i];
+  if (!job) return;
+
+  const jsonOut = path.join(os.tmpdir(), `seekr-run-${Date.now()}-${i}.json`);
+  job.jsonOut = jsonOut;
+  activeIndex = i;
+
+  // --url lets the CLI classify the link itself, so the UI doesn't have to
+  // ask which kind it is. --criteria is harmless when the link turns out to
+  // be a single posting (it's only consulted for board runs). --profile is
+  // the only flag this feature added, and it already existed on the CLI.
+  const args = ["src/index.ts", "--url", job.url, "--criteria", "./criteria.json"];
+  args.push("--resume", batch.resume, "--out", batch.outDir, "--json-out", jsonOut);
+  args.push("--profile", profileForSlot(i));
+  // Shared across the whole batch: the first link to launch hosts the
+  // browser on this port, and every link after it attaches as a new tab.
+  // --profile above is then only consulted by a job that fails to attach
+  // and has to open its own window.
+  if (batch.cdpPort) args.push("--cdp-port", String(batch.cdpPort));
+  // Freeze the opened form into the regression corpus on every run. Always
+  // on rather than a UI toggle: the cost is disk (gitignored, prunable),
+  // and a capture you forgot to enable is worth nothing - the runs most
+  // worth having frozen are the ones that surprised you, which is exactly
+  // when you weren't thinking about test fixtures. The CLI captures before
+  // filling anything, so these hold the blank form and none of your data,
+  // and a capture failure only warns rather than failing the application.
+  args.push("--snapshot", path.join(MVP_DIR, "snapshots"));
+  if (batch.headed) args.push("--headed");
+
+  send("job-started", { index: i, total: jobs.length, url: job.url, command: `npx tsx ${args.join(" ")}` });
+
+  const proc = spawn(process.execPath, [batch.tsxCli, ...args], {
     cwd: MVP_DIR,
     shell: false,
     env: { ...process.env, FORCE_COLOR: "0", ELECTRON_RUN_AS_NODE: "1" },
   });
-  // Captured so the close handler below can tell "this exact process" apart
-  // from "whatever the module-level `child` happens to be by the time the
-  // OS gets around to telling Node it exited" - those can diverge now that
-  // Reset makes kill-then-immediately-start-another-run a normal flow, not
-  // an edge case. Without this, a delayed close event from a run just
-  // killed by Reset would null out the *new* run's `child` the moment it
-  // arrives and push a stale run-finished at the renderer over top of the
-  // new run's live output.
-  const thisChild = child;
+  job.proc = proc;
 
   const onChunk = (buf) => {
     const text = buf.toString();
-    send("run-output", text);
-    if (PAUSE_PROMPT_RE.test(text)) send("run-awaiting-input", text.trim().split("\n").pop());
-  };
-  child.stdout.on("data", onChunk);
-  child.stderr.on("data", onChunk);
-
-  child.on("close", (code) => {
-    if (child !== thisChild) return; // superseded by a later run - not our state to touch
-    child = null;
-    let report = null;
-    try {
-      if (fs.existsSync(jsonOut)) {
-        report = JSON.parse(fs.readFileSync(jsonOut, "utf-8"));
-        fs.unlinkSync(jsonOut);
-      }
-    } catch (err) {
-      send("run-output", `\n[shell] could not read structured results: ${err.message}\n`);
+    send("run-output", { index: i, text });
+    if (FINAL_PAUSE_RE.test(text)) {
+      advance(job, "review");
+    } else if (PAUSE_PROMPT_RE.test(text)) {
+      send("run-awaiting-input", { index: i, line: text.trim().split("\n").pop() });
     }
-    send("run-finished", { code, report });
-  });
+  };
+  proc.stdout.on("data", onChunk);
+  proc.stderr.on("data", onChunk);
 
-  return { ok: true };
-});
+  // Reached when a link fails early enough to never print the review prompt
+  // (an unclassifiable URL, no posting over the score threshold, a crash),
+  // and much later for parked jobs when Stop/New run/quit kills them.
+  // advance() is idempotent, so the second case is a no-op.
+  proc.on("close", (code) => advance(job, code === 0 ? "done" : "failed", code));
+}
 
-// Answers the CLI's stdin prompt - the same thing pressing Enter does.
+// Retires one link from the queue and starts the next.
+//
+// The "review" path is the interesting one, and it is deliberately NOT
+// triggered by answering the CLI's final prompt. Sending Enter there would
+// unblock index.ts, which immediately runs `finally { await
+// browser.close() }` - closing the very window the user wanted kept. So the
+// queue advances on *detecting* that prompt and never answers it: the CLI
+// process stays parked on stdin, costing no CPU, and that parked process is
+// precisely what holds its Chromium window open for review.
+//
+// The report is also read here rather than on process exit. index.ts writes
+// --json-out before printing the review prompt, but a parked process never
+// exits, so waiting for 'close' would mean a batch's results never rendered
+// at all until the user tore everything down.
+function advance(job, status, code) {
+  if (job.advanced) return;
+  job.advanced = true;
+
+  let report = null;
+  try {
+    if (job.jsonOut && fs.existsSync(job.jsonOut)) {
+      report = JSON.parse(fs.readFileSync(job.jsonOut, "utf-8"));
+      fs.unlinkSync(job.jsonOut);
+    }
+  } catch (err) {
+    send("run-output", { index: job.index, text: `\n[shell] could not read structured results: ${err.message}\n` });
+  }
+  // url is sent separately rather than left to be read out of the report,
+  // because the cases with no report are exactly the ones that most need a
+  // label - a link that failed before producing a form has nothing else to
+  // identify it by.
+  send("job-finished", { index: job.index, url: job.url, status, code, report });
+
+  const next = job.index + 1;
+  if (next < jobs.length) {
+    startJob(next);
+  } else {
+    activeIndex = -1;
+    send("queue-finished", { total: jobs.length });
+  }
+}
+
+// Answers the CLI's stdin prompt - the same thing pressing Enter does. Only
+// ever aimed at the link currently being filled; parked jobs are left
+// blocked on purpose (see advance()).
 ipcMain.handle("send-enter", async () => {
-  if (child && child.stdin.writable) {
-    child.stdin.write("\n");
+  const job = jobs[activeIndex];
+  if (job && job.proc && job.proc.stdin.writable) {
+    job.proc.stdin.write("\n");
     return true;
   }
   return false;
 });
 
 ipcMain.handle("stop", async () => {
-  const wasRunning = !!child;
+  const wasRunning = jobs.length > 0;
   await killActiveRun();
   return wasRunning;
 });

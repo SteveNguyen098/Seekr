@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+BUG: a selector captured at discovery time stopped resolving mid-run.
+
+Confirmed live on two unrelated platforms. Workable reassigns random ids on
+every React re-render; BambooHR/Fabric uses sequential "FabricTextField-NNN"
+and was observed changing after merely filling an UNRELATED field elsewhere on
+the page (City kept name="city.value" across an id change from -379 to -383).
+
+The failure mode is worse than a clean error: a stale #id makes every
+downstream fill throw or fall back to "", which gets reported as "entered X but
+it did not persist (likely a custom dropdown)" - a plausible-sounding but
+wrong diagnosis that sends whoever reads the report looking in the wrong place.
+
+So a UNIQUE name must win over id. A SHARED name (the normal shape for a radio
+group) must NOT - it would target every member of the group at once - which is
+what the radio pair at the bottom guards.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Workable - prefer stable name over regenerated id</title>
+  </head>
+  <body>
+    <label for="FabricTextField-379">City</label>
+    <input id="FabricTextField-379" name="city.value" type="text" />
+
+    <!-- No name at all: id is the correct choice here. -->
+    <label for="FabricTextField-380">State</label>
+    <input id="FabricTextField-380" type="text" />
+
+    <!-- Neither name nor id: must fall back to the synthetic marker, never
+         to nth-of-type, which counts within each parent and would be
+         ambiguous on a form where every field sits in its own wrapper. -->
+    <div><label>Postal code<input type="text" /></label></div>
+
+    <!-- Shared name: must NOT collapse to [name="..."]. -->
+    <fieldset>
+      <legend>Do you require sponsorship?</legend>
+      <label><input type="radio" name="sponsorship" value="yes" /><span>Yes</span></label>
+      <label><input type="radio" name="sponsorship" value="no" /><span>No</span></label>
+    </fieldset>
+  </body>
+</html>

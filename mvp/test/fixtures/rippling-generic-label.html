@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+BUG: two different questions were both labelled "Select", and Claude answered
+one of them wrong.
+
+Confirmed live on Rippling's ATS. Two fields carried aria-label="Select"
+directly on the control and no aria-labelledby at all, so the cascade stopped
+right there thinking it had found a real label. Claude then saw two IDENTICAL,
+contentless "Select" fields with nothing to tell them apart - "do you live in
+an accepted state" vs "do you need visa sponsorship" - and answered one
+incorrectly.
+
+The same failure mode was confirmed on Ashby with "Start typing..." and on
+BambooHR with "file-input": a non-empty but useless string never reaches the
+proximity fallback, whereas a fully empty one does. So generic UI chrome must
+be cleared to "" rather than accepted.
+
+The third control pins the opposite direction: when aria-labelledby DOES point
+at real question text, it must outrank a generic aria-label rather than being
+cleared along with it.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Rippling - generic instruction words are not labels</title>
+  </head>
+  <body>
+    <div class="question">
+      <div class="qtext">Do you live in an accepted state?</div>
+      <div role="combobox" aria-label="Select"></div>
+    </div>
+
+    <div class="question">
+      <div class="qtext">Do you now or will you in the future require visa sponsorship?</div>
+      <div role="combobox" aria-label="Select..."></div>
+    </div>
+
+    <div class="question">
+      <span id="race-q">Please identify your race</span>
+      <div role="combobox" aria-label="Search" aria-labelledby="race-q"></div>
+    </div>
+  </body>
+</html>

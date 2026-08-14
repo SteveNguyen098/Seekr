@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+BUG: every radio question inherited the PREVIOUS question's text.
+
+Confirmed live on BambooHR/Fabric, where each Yes/No question is
+<fieldset><legend>QUESTION</legend>...</fieldset>. <legend> is the
+standards-correct element for a fieldset's caption, but only :scope > label
+was checked - so the group question came back empty and fell through to the
+DOM-proximity walk, which starts at the fieldset and reads its PREVIOUS
+SIBLING: the entire preceding question's block.
+
+Measured consequence on a real posting: "Were you referred by a current Euna
+employee?" inherited the label of the office-attendance question above it and
+was answered "Yes" - a false claim, contradicted by the "N/A" the same run put
+in the referrer-name fields. A wrong-but-plausible answer is far worse than a
+blank one, because nothing in the report looks off.
+
+The off-by-one only shows up with TWO consecutive fieldsets; one alone can't
+inherit anything.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BambooHR - fieldset legend off-by-one</title>
+  </head>
+  <body>
+    <fieldset>
+      <legend>Are you willing to work in the office 3 days per week?</legend>
+      <label><input type="radio" name="office_days" value="yes" /><span>Yes</span></label>
+      <label><input type="radio" name="office_days" value="no" /><span>No</span></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Were you referred by a current employee?</legend>
+      <label><input type="radio" name="referred" value="yes" /><span>Yes</span></label>
+      <label><input type="radio" name="referred" value="no" /><span>No</span></label>
+    </fieldset>
+  </body>
+</html>

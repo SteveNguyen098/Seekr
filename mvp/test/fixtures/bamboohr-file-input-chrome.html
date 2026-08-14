@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+BUG: the resume was never uploaded on a required field, and the report showed
+no error.
+
+Confirmed live on a BambooHR/Fabric posting. Two layers had to be peeled:
+
+1. The file-upload component hardcodes aria-label="file-input" - a real,
+   non-empty aria-label, so it won the label cascade and the proximity
+   fallback never ran. The resume-vs-not-resume check only matches
+   "resume"/"cv" in id/name/label, so it correctly (but wrongly in outcome)
+   left the upload empty.
+
+2. Clearing that wasn't enough: the proximity walk then found the widget's own
+   "Choose File" button caption + "No file selected" status text - both closer
+   ancestors than the real "Resume*" label further up. That chrome is generic
+   on any platform and specific enough that rejecting it can't discard a real
+   label.
+
+The label must come back as "Resume*" - close enough for the resume check to
+match, and marked required by its asterisk.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BambooHR - file input chrome beats the real label</title>
+  </head>
+  <body>
+    <div class="row">
+      <p>Resume*</p>
+      <div class="widget">
+        <span>Choose FileNo file selected</span>
+        <input type="file" id="FabricFileField-12" aria-label="file-input" />
+      </div>
+    </div>
+  </body>
+</html>

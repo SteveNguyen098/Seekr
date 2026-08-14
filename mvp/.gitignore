@@ -7,8 +7,15 @@ user_profile.txt
 qa_context.txt
 work_auth_context.txt
 *.bat
-.browser-profile/
+# Slot 0 is ".browser-profile"; a queued batch adds "-2".."-5" beside it,
+# one per link, since overlapping review windows can't share a profile.
+.browser-profile*/
 # Local diagnostic scripts: these hardcode a specific real employer's
 # posting URL and local paths, same as the *.bat launchers above, so they
 # stay out of the public repo.
 diagnose-*.mjs
+
+# Captured real application forms for the snapshot regression corpus.
+# Real employers pages - same call as diagnose-*.mjs above: kept local, not
+# committed. The synthetic fixtures in test/fixtures ARE committed.
+snapshots/

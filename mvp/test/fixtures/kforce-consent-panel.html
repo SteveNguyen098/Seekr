@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+BUG: the cookie consent centre was mistaken for the application form.
+
+Measured live on a Kforce posting. OneTrust's preference centre stays mounted
+(hidden) even after its banner is dismissed, so its toggles were the ONLY
+fields discovered on the page. That's worse than noise: findFormContext picks
+whichever context holds the most fields, so the consent panel was selected AS
+the form, and the run ticked cookie preferences while the real application sat
+untouched.
+
+The real application fields below must survive; only the consent controls are
+skipped. Detection is scoped to the known consent platforms' own container
+ids/classes, NOT to matching the word "cookie" - a legitimate question that
+merely mentions cookies must still be answerable.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Kforce - OneTrust consent panel</title>
+  </head>
+  <body>
+    <div id="onetrust-consent-sdk">
+      <div id="onetrust-pc-sdk">
+        <label for="ot-target">Targeting Cookies</label>
+        <input id="ot-target" type="checkbox" />
+        <label for="ot-perf">Performance Cookies</label>
+        <input id="ot-perf" type="checkbox" />
+        <label for="ot-search">Cookie list search</label>
+        <input id="ot-search" type="text" />
+      </div>
+    </div>
+
+    <form>
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required />
+
+      <label for="cookie-policy-q">Have you read our cookie policy?</label>
+      <input id="cookie-policy-q" name="cookie_policy_ack" type="text" />
+    </form>
+  </body>
+</html>

@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+BUG: a genuinely-required field was reported optional.
+
+Confirmed live on Ashby: "Current Location*" is marked required only by a CSS
+pseudo-element (label::after { content: "*" }). There is no `required`
+attribute, no `aria-required`, and nothing in the label's textContent for the
+text-based fallback to find - yet the field really does block submission.
+
+This fixture is the reason snapshots must carry their stylesheets. Strip the
+CSS and this check does not fail - it PASSES while testing nothing, because
+the asterisk simply stops existing. A silently-vacuous test is worse than a
+red one.
+
+The control below it is the same shape with no asterisk rule, so a
+false-positive (marking everything required) also fails here.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Ashby - CSS-only required asterisk</title>
+    <style>
+      label.required::after {
+        content: "*";
+        color: #d33;
+        margin-left: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <label class="required" for="loc">Current Location</label>
+    <input id="loc" name="current_location" type="text" />
+
+    <label for="linkedin">LinkedIn Profile</label>
+    <input id="linkedin" name="linkedin_url" type="text" />
+  </body>
+</html>

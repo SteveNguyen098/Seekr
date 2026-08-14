@@ -1,0 +1,34 @@
+<!doctype html>
+<!--
+BUG: two real, required, answerable questions were discarded as invisible
+plumbing - not filled, not skipped, no note at all.
+
+Confirmed live on Workable, whose Yes/No radios are
+<label><input aria-hidden="true"><span>YES</span></label>. aria-hidden here is
+legitimate: the native input is styled behind a visible custom control, and
+it's hidden purely so a screen reader doesn't announce both it and the label.
+
+So aria-hidden alone cannot mean "skip". It only means skip when there is NO
+visible label partner. This fixture pins both sides of that gate: the radios
+below have a visible <span> partner and must survive, while the react-select
+style duplicate at the bottom - aria-hidden with nothing visible attached - is
+genuine plumbing and must be skipped.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Workable - aria-hidden with a visible label partner</title>
+  </head>
+  <body>
+    <fieldset>
+      <legend>Do you have a reliable vehicle for this role?</legend>
+      <label><input type="radio" name="vehicle" value="yes" aria-hidden="true" /><span>YES</span></label>
+      <label><input type="radio" name="vehicle" value="no" aria-hidden="true" /><span>NO</span></label>
+    </fieldset>
+
+    <!-- react-select's hidden duplicate: carries required-field validation
+         only, has no visible partner, and must be skipped as plumbing rather
+         than reported as a honeypot. -->
+    <input type="text" name="rs-shadow-input" aria-hidden="true" style="width: 0; height: 0" />
+  </body>
+</html>

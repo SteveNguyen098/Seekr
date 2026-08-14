@@ -362,7 +362,67 @@ ${placeholdersBlock}`,
   for (let i = 0; i < placeholders.length; i++) {
     if (isSkillsSection(placeholders[i])) result[i] = normalizeCrmTerminology(result[i]);
   }
+  // Then drop anything the skills lists gained that the template never had.
+  // Must run AFTER the CRM pass above, so a re-worded "CRM Platforms" is
+  // canonicalized into a template item rather than mistaken for an
+  // invention and stripped.
+  for (let i = 0; i < placeholders.length; i++) {
+    const p = placeholders[i];
+    if (!isSkillsSection(p) || !looksLikeList(p.originalContent)) continue;
+    result[i] = keepOnlyTemplateItems(normalizeCrmTerminology(p.originalContent), result[i], p.sectionHeader);
+  }
   return result;
+}
+
+/**
+ * Enforces the no-fabrication rule on the skills lists in code rather than
+ * trusting the prompt to hold.
+ *
+ * The instruction already says to reorder existing items only, and it
+ * mostly does - but an audit of 8 real runs against one template found one
+ * resume that appended "Data Warehouse Reporting" to Technical Skills and
+ * two more entries to Core Competencies, none of which appear anywhere in
+ * the template. On a document submitted to an employer that's a claim the
+ * candidate never made about themselves, which is a different kind of error
+ * from an awkward reordering, so it's worth making structurally impossible.
+ *
+ * Only additions are removed. Reordering survives untouched - it's the
+ * entire point of tailoring - and dropping items stays allowed, because the
+ * page-count retry loop legitimately needs to shorten these lines to fit.
+ * Kept items are emitted in the TEMPLATE's own wording, so casing drift
+ * ("microsoft excel") is corrected at the same time.
+ */
+export function keepOnlyTemplateItems(originalContent: string, generated: string, label = ""): string {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(/[.;,]+$/, "").trim();
+  const allowed = new Map<string, string>();
+  for (const raw of originalContent.split(",")) {
+    const item = raw.trim();
+    if (item) allowed.set(norm(item), item);
+  }
+
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of generated.split(",")) {
+    const item = raw.trim();
+    if (!item) continue;
+    const key = norm(item);
+    const canonical = allowed.get(key);
+    if (!canonical) dropped.push(item);
+    else if (!seen.has(key)) {
+      seen.add(key);
+      kept.push(canonical);
+    }
+  }
+
+  // Nothing recognisable came back (a wholesale rewrite rather than a
+  // reorder). Falling back to the template's own list is the safe move -
+  // it's all true by definition, just not reordered.
+  if (!kept.length) return originalContent;
+  if (dropped.length) {
+    console.log(`  -> "${label}": dropped ${dropped.length} item(s) not in the template: ${dropped.join(", ")}`);
+  }
+  return kept.join(", ");
 }
 
 const EXTRACT_TOOL: Anthropic.Tool = {

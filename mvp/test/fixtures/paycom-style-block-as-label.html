@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+BUG: a <style> block was handed to Claude as the question text, verbatim CSS.
+
+Confirmed live on a Paycom-hosted form. The label cascade's last resort walks
+up the DOM taking the first previous sibling with substantial text, and
+.textContent includes <style>/<script> contents - invisible to a human, but a
+long run of text here. The field's "label" came back as
+".opt-in-hyper-link { text-decoration: underline; } ...".
+
+Two distinct shapes, both real:
+  q_contains_style - the previous sibling CONTAINS a <style>; the fix clones
+                     and strips those subtrees before reading text.
+  q_is_style       - the previous sibling IS a <style>; the fix skips the
+                     element outright and keeps walking.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Paycom - style block as label</title>
+  </head>
+  <body>
+    <div class="wrapper">
+      <div class="qtext">
+        <style>
+          .opt-in-hyper-link { text-decoration: underline; color: #06c; }
+          .opt-in-hyper-link:hover { text-decoration: none; }
+        </style>
+        What is your preferred contact method?
+      </div>
+      <input type="text" name="q_contains_style" />
+    </div>
+
+    <div class="wrapper">
+      <p>Do you consent to receive text messages about this application?</p>
+      <style>
+        .consent-row { display: flex; gap: 8px; align-items: center; }
+      </style>
+      <input type="text" name="q_is_style" />
+    </div>
+  </body>
+</html>
