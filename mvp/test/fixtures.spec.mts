@@ -181,6 +181,30 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "self-identify-group.html",
+    bug: "a required pronoun checkbox group was reported as four separate outstanding requirements",
+    check(fields, t) {
+      const pronouns = fields.filter((f) => f.nameAttr === "pronouns[]");
+      t.is("the checkbox group is discoverable as a group", pronouns.length, 4);
+      t.ok("groupName stays radio-only, so nameAttr is what ties them", pronouns.every((f) => f.groupName === ""));
+      t.ok("every option is required", pronouns.every((f) => f.required));
+
+      const self = pronouns.filter((f) => /prefer\s+to\s+self[\s-]*(identify|describe)/i.test(f.label));
+      t.is("exactly one option is the self-identify one", self.length, 1);
+      t.is("...and it is the right one", self[0]?.label, "Prefer to self-identify");
+
+      // It answers the question rather than declining it - the two must not
+      // be conflated, since a candidate's instruction about one should not
+      // silently apply to the other.
+      const DECLINE_RE = /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want|consent|agree)|not disclosed|n\/a\b/i;
+      t.ok("'prefer to self-identify' is not treated as a decline", !DECLINE_RE.test(self[0]!.label));
+
+      const optional = fields.filter((f) => f.nameAttr === "source[]");
+      t.is("the optional group is also grouped", optional.length, 3);
+      t.ok("optional group is not required", optional.every((f) => !f.required));
+    },
+  },
+  {
     file: "meridianlink-iframe-host.html",
     bug: "a valid job link was rejected because the form lived in an embedded iframe",
     check(fields, t, ctx) {

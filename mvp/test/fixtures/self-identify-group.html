@@ -1,0 +1,48 @@
+<!doctype html>
+<!--
+A required self-identification question rendered as a checkbox group: four
+options sharing one `name`, exactly the shape confirmed live on a Greenhouse
+posting (VTS), where all four carried name="question_8974712005[]".
+
+Two things this pins:
+
+1. The group is discoverable AS a group. `groupName` is deliberately
+   radio-only, so before nameAttr existed there was nothing tying these four
+   controls together - each looked like an independent required checkbox, and
+   the run reported all four as outstanding requirements.
+
+2. The candidate's standing instruction: when such a question is REQUIRED,
+   tick its "prefer to self-identify" option. That option is not a decline -
+   DECLINE_RE must NOT claim it - it answers the question by opting to
+   describe oneself, and it is the only choice that satisfies a required
+   group without asserting something about the candidate.
+
+The optional group below it pins the other half: an unanswered optional
+question blocks nothing, so nothing should be ticked there.
+
+Plain HTML with no framework, deliberately: this checks OUR logic. Whether a
+React-controlled input on a live ATS accepts the click is a separate
+question, and one a frozen snapshot cannot answer either way.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Self-identification checkbox group</title>
+  </head>
+  <body>
+    <fieldset>
+      <legend>Which pronouns do you use? *</legend>
+      <label><input type="checkbox" name="pronouns[]" id="p_she" value="she" required /><span>She/Her/Hers</span></label>
+      <label><input type="checkbox" name="pronouns[]" id="p_he" value="he" required /><span>He/Him/His</span></label>
+      <label><input type="checkbox" name="pronouns[]" id="p_they" value="they" required /><span>They/Them</span></label>
+      <label><input type="checkbox" name="pronouns[]" id="p_self" value="self" required /><span>Prefer to self-identify</span></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>How did you hear about us?</legend>
+      <label><input type="checkbox" name="source[]" id="s_friend" value="friend" /><span>From a friend</span></label>
+      <label><input type="checkbox" name="source[]" id="s_event" value="event" /><span>At an event</span></label>
+      <label><input type="checkbox" name="source[]" id="s_self" value="other" /><span>Prefer to self-identify</span></label>
+    </fieldset>
+  </body>
+</html>

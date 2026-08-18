@@ -86,6 +86,16 @@ export interface DiscoveredField {
    * always fail by design.
    */
   hasVisibleLabelPartner: boolean;
+  /**
+   * The raw `name` attribute, for ANY control type. Distinct from
+   * `groupName`, which is deliberately radio-only. A checkbox group shares
+   * one `name` the same way a radio group does - confirmed live on a
+   * Greenhouse posting whose four pronoun checkboxes all carry
+   * name="question_8974712005[]" - but `selector` falls back to `#id` there
+   * because a shared name identifies the whole group rather than one
+   * control, so the grouping was otherwise invisible to callers.
+   */
+  nameAttr: string;
 }
 
 export interface FillReport {
@@ -140,6 +150,14 @@ const DECLINE_RE =
 // messages/SMS - paired with DECLINE_RE below so the same "no thanks"
 // phrasing detection doubles for both EEOC decline options and this.
 const TEXT_MESSAGE_RE = /text messag|\bsms\b/i;
+// Matches the OPTION that lets a candidate answer a self-identification
+// question (pronouns and similar) without picking from the offered list.
+// Deliberately narrower than DECLINE_RE, which also covers "prefer not to
+// say" / "decline to answer": those decline the question outright, whereas
+// this one answers it by opting to describe oneself. Both are legitimate,
+// but a candidate's instruction about one shouldn't silently apply to the
+// other, so they stay separate.
+const SELF_IDENTIFY_OPTION_RE = /prefer\s+to\s+self[\s-]*(identify|describe)/i;
 // "Where do you plan on working from (for payroll tax purposes)?" and
 // similar work-location / payroll-jurisdiction questions ask for the same
 // answer as a plain "City"/"Current Location" field - the candidate's own
@@ -890,7 +908,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
 
         const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner };
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, nameAttr: nameAttr || "" };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -2015,6 +2033,19 @@ export async function fillCurrentPage(
   // group includes a real, matchable decline option ("Decline to
   // self-identify", "I decline to self-identify for protected veteran
   // status").
+  // Checkbox/radio groups that will be answered by ticking their own
+  // "prefer to self-identify" option further down. Collected up front
+  // because the sibling options are reached BEFORE the chosen one in field
+  // order, and each needs to know the group is already accounted for so it
+  // isn't reported as an outstanding requirement. Keyed on the shared
+  // `name` attribute, which is what actually groups them in the HTML.
+  const selfIdentifiedGroups = new Set<string>();
+  for (const f of fields) {
+    if ((f.type === "checkbox" || f.type === "radio") && f.required && f.nameAttr && SELF_IDENTIFY_OPTION_RE.test(f.label)) {
+      selfIdentifiedGroups.add(f.nameAttr);
+    }
+  }
+
   const handledSelectors = new Set<string>();
   const radioGroups = new Map<string, DiscoveredField[]>();
   for (const field of fields) {
@@ -2299,7 +2330,37 @@ export async function fillCurrentPage(
       continue;
     }
 
+    if ((field.type === "checkbox" || field.type === "radio") && field.required && SELF_IDENTIFY_OPTION_RE.test(field.label)) {
+      // A candidate's own standing instruction for self-identification
+      // questions (pronouns and the like): when the question is REQUIRED
+      // and offers a "prefer to self-identify" option, that's the one to
+      // pick. Unlike the protected-category groups below, this isn't the
+      // tool guessing at an answer - it's selecting the option that
+      // declines to pick from the list, which is the candidate's stated
+      // preference and is the only choice that satisfies a required group
+      // without asserting something about them.
+      //
+      // Left alone when the group is optional: an unanswered optional
+      // question blocks nothing, so there's no reason to put an answer on
+      // the form the candidate didn't ask for.
+      const ok = await checkField(formCtx, field.type === "radio" ? stableRadioSelector(field) : field.selector);
+      if (ok) filled.push({ label: field.label, value: field.label });
+      else skipped.push({ label: field.label, reason: "preferred self-identify option - could not select it, please select manually", required: field.required });
+      continue;
+    }
+
     if (field.type === "checkbox" || field.type === "radio") {
+      // A sibling of a group already answered via its self-identify option
+      // above. Reported as a deliberate skip rather than an outstanding
+      // requirement: the group's `required` is satisfied by the one option
+      // that IS ticked, so listing the other three as "still need your
+      // input" would send the candidate looking for work that's already
+      // done. Grouped by the shared `name` attribute, which is how a
+      // checkbox group is expressed in HTML (see DiscoveredField.nameAttr).
+      if (field.nameAttr && selfIdentifiedGroups.has(field.nameAttr)) {
+        skipped.push({ label: field.label || field.selector, reason: "left unticked - this group was answered with its self-identify option", required: false });
+        continue;
+      }
       // Broader-scope consent/legal checkboxes are always left for the
       // user, as are genuinely sensitive EEOC questions (gender, race,
       // veteran/disability status) - those render as a real multi-option
