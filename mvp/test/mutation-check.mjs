@@ -1,16 +1,27 @@
 // Mutation check: does the fixture harness actually CATCH each regression?
 //
-// Reintroduces each historical bug into apply.ts one at a time, reruns only
-// the fixture that guards it, and asserts the suite goes red. A guard that
-// stays green under its own mutation is testing nothing.
+// Reintroduces each historical bug one at a time, reruns only the fixture
+// that guards it, and asserts the suite goes red. A guard that stays green
+// under its own mutation is testing nothing.
 //
-// apply.ts is restored after every mutation, and verified clean via git at
-// the end regardless of how this exits.
+// Every mutated file is restored after each mutation and verified
+// byte-identical at the end, regardless of how this exits.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
-const APPLY = "src/apply.ts";
-const original = fs.readFileSync(APPLY, "utf-8");
+// Files a mutation may touch. `original` is read once up front so a restore
+// can never depend on state a half-finished run left behind.
+const SOURCES = {
+  apply: "src/apply.ts",
+  scrape: "src/scrape.ts",
+};
+const ORIGINAL = Object.fromEntries(Object.entries(SOURCES).map(([k, p]) => [k, fs.readFileSync(p, "utf-8")]));
+
+// Which spec proves which kind of guard.
+const SPECS = {
+  fields: "test/fixtures.spec.mts",
+  classify: "test/classify.spec.mts",
+};
 
 const MUTATIONS = [
   {
@@ -62,6 +73,26 @@ const MUTATIONS = [
     to: "function allContexts(page: Page): FormContext[] {\n  if (1) return [page];",
   },
   {
+    bug: "stop telling a removed posting apart from an ordinary board",
+    source: "scrape",
+    spec: "classify",
+    fixture: "dead",
+    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url);",
+    to: "const deadPosting = false;",
+  },
+  {
+    bug: "call any posting-shaped link dead, ignoring whether it redirected",
+    source: "scrape",
+    spec: "classify",
+    // Deliberately NOT jobs/live-67890.html: with no sibling links that page
+    // exits at the "form + description -> job" branch and never consults
+    // deadPosting, so it stayed green under this mutation. Caught by this
+    // very check.
+    fixture: "engineering",
+    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url);",
+    to: "const deadPosting = askedForOnePosting;",
+  },
+  {
     bug: "let the proximity walk accept a widget's generic placeholder",
     fixture: "react-select",
     from: "const isGenericChrome = GENERIC_LABEL_RE.test(text);",
@@ -80,20 +111,25 @@ let missed = 0;
 
 try {
   for (const m of MUTATIONS) {
+    const srcKey = m.source ?? "apply";
+    const specKey = m.spec ?? "fields";
+    const file = SOURCES[srcKey];
+    const original = ORIGINAL[srcKey];
+
     if (!original.includes(m.from)) {
-      console.log(`SKIP    ${m.bug}\n        (anchor not found - mutation is stale, fix it)`);
+      console.log(`SKIP    ${m.bug}\n        (anchor not found in ${file} - mutation is stale, fix it)`);
       missed++;
       continue;
     }
-    fs.writeFileSync(APPLY, original.replace(m.from, m.to));
+    fs.writeFileSync(file, original.replace(m.from, m.to));
 
     let red = false;
     try {
-      execFileSync("npx", ["tsx", "test/fixtures.spec.mts", m.fixture], { stdio: "pipe", shell: true });
+      execFileSync("npx", ["tsx", SPECS[specKey], m.fixture], { stdio: "pipe", shell: true });
     } catch {
       red = true; // non-zero exit = the harness noticed
     }
-    fs.writeFileSync(APPLY, original);
+    fs.writeFileSync(file, original);
 
     if (red) {
       caught++;
@@ -104,12 +140,14 @@ try {
     }
   }
 } finally {
-  fs.writeFileSync(APPLY, original);
   // Compared against the content this run started with, NOT against git:
-  // apply.ts legitimately carries uncommitted work most of the time, and a
+  // these files legitimately carry uncommitted work most of the time, and a
   // git-based check reports that as a failed restore.
-  const restored = fs.readFileSync(APPLY, "utf-8") === original;
-  console.log(`\napply.ts restored: ${restored ? "byte-identical to how this run found it" : "MISMATCH - restore failed, check the file"}`);
+  for (const [key, file] of Object.entries(SOURCES)) {
+    fs.writeFileSync(file, ORIGINAL[key]);
+    const restored = fs.readFileSync(file, "utf-8") === ORIGINAL[key];
+    console.log(`\n${file} restored: ${restored ? "byte-identical to how this run found it" : "MISMATCH - restore failed, check the file"}`);
+  }
 }
 
 console.log(`\n${caught} caught, ${missed} missed`);

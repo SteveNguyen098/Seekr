@@ -4,12 +4,13 @@
   "description": "Seekr auto-apply proof of concept",
   "main": "index.js",
   "scripts": {
-    "test": "tsx test/fixtures.spec.mts && tsx test/snapshots.spec.mts",
+    "test": "tsx test/fixtures.spec.mts && tsx test/classify.spec.mts && tsx test/snapshots.spec.mts",
     "test:mutation": "node test/mutation-check.mjs",
     "test:fixtures": "tsx test/fixtures.spec.mts",
     "test:snapshots": "tsx test/snapshots.spec.mts",
     "test:pipeline": "tsx test/snapshot-pipeline.mjs",
-    "test:join": "node test/join-check.mjs"
+    "test:join": "node test/join-check.mjs",
+    "test:classify": "tsx test/classify.spec.mts"
   },
   "keywords": [],
   "author": "",

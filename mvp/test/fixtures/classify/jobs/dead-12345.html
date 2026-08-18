@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+BUG: a posting taken down by the employer was reported as a criteria problem.
+
+Confirmed live on a Greenhouse posting (Procare Solutions) that worked days
+earlier. Once the job was removed, the URL still answered 200 but redirected
+to the company's board at "?error=true", whose signals are indistinguishable
+from that board requested directly - 12 posting links, no apply text, no
+form, the same ~20.5k of text.
+
+Classified as an ordinary board, the run then scraped the listings, matched
+nothing, and reported "No postings matched the target titles. Try broader
+keywords." - which sends whoever reads it off editing criteria.json when the
+real cause is a dead link. Worse, had any listing matched, it would have
+filled out a DIFFERENT role than the link pointed at.
+
+This file stands in for the dead posting: a posting-shaped path that
+redirects to a board-shaped page.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting…</title>
+    <script>
+      // location.replace mirrors a server-side redirect: the posting URL is
+      // not left in history, exactly like the real one.
+      location.replace("../board.html?error=true");
+    </script>
+  </head>
+  <body>
+    <p>This position is no longer available. Redirecting to current openings…</p>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+A department listing page whose URL is posting-shaped: "/careers/engineering"
+matches the same pattern a single posting does ("/careers/<slug>"), but it is
+a board and never redirected anywhere.
+
+This is the case that pins the SECOND half of the dead-posting rule. The rule
+is `askedForOnePosting && redirected`, and the redirect half needs a fixture
+that actually reaches the check - jobs/live-67890.html does not, because with
+no sibling links it exits earlier at "has a form and a full description ->
+job" and never consults deadPosting at all. Confirmed by mutation: dropping
+the redirect requirement left that fixture green, which is precisely the
+"passes for the wrong reason" failure synthetic fixtures are prone to.
+
+Here the 6 listings trip the board threshold, so deadPosting IS consulted.
+Drop the redirect requirement and this page gets reported as a removed job.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Engineering roles at Example Corp</title>
+  </head>
+  <body>
+    <h1>Engineering openings</h1>
+    <p>
+      Our engineering team is distributed across the United States and hires year round. Each of the
+      roles below sits on a small team with direct ownership of its area, and every listing includes
+      the salary range up front.
+    </p>
+    <ul>
+      <li><a href="../jobs/2001.html">Senior Backend Engineer</a></li>
+      <li><a href="../jobs/2002.html">Frontend Engineer</a></li>
+      <li><a href="../jobs/2003.html">Platform Engineer</a></li>
+      <li><a href="../jobs/2004.html">Data Engineer</a></li>
+      <li><a href="../jobs/2005.html">Site Reliability Engineer</a></li>
+      <li><a href="../jobs/2006.html">Engineering Manager</a></li>
+    </ul>
+  </body>
+</html>

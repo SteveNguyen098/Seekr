@@ -215,6 +215,13 @@ try {
   if (ambiguousUrl) {
     console.log(`\nInspecting the link...`);
     const verdict = await classifyUrl(page, ambiguousUrl);
+    if (verdict.kind === "gone") {
+      console.log(`  -> This posting is no longer listed (${verdict.reason}).`);
+      console.log(`     The employer took it down - the link now lands on their careers board.`);
+      console.log(`     Nothing was run. Your criteria are fine; this is a dead link, not a filter problem.`);
+      await browser.close();
+      process.exit(0);
+    }
     if (verdict.kind === "unknown") {
       console.log(`  -> This doesn't look like a job posting or a careers page (${verdict.reason}).`);
       console.log(`     Nothing was run. Check the link and try again.`);

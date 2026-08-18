@@ -99,7 +99,7 @@ export async function listJobs(page: Page, careerUrl: string): Promise<JobPostin
 export async function classifyUrl(
   page: Page,
   url: string
-): Promise<{ kind: "job" | "board" | "unknown"; reason: string }> {
+): Promise<{ kind: "job" | "board" | "gone" | "unknown"; reason: string }> {
   const ok = await page
     .goto(url, { waitUntil: "networkidle", timeout: 30000 })
     .then(() => true)
@@ -164,12 +164,45 @@ export async function classifyUrl(
     { postingLinks: 0, hasApply: false, hasForm: false, textLength: 0 }
   );
 
+  // A link that named ONE posting but landed somewhere else, on a page that
+  // reads as a listing, means that posting was taken down: ATSs redirect a
+  // dead job to the company's board rather than 404ing. Confirmed live - a
+  // Greenhouse posting that worked days earlier now answers 200 and lands on
+  // "/procaresolutions?error=true", whose signals are indistinguishable from
+  // that company's own board (12 links, no apply text, no form, same ~20.5k
+  // of text). The ?error=true param is a strong extra hint but is
+  // vendor-specific, so it isn't required here.
+  //
+  // Worth its own kind rather than reporting "board": the caller asked for
+  // one specific job, and quietly scraping the board instead can end up
+  // filling out a DIFFERENT role than the link pointed at - a worse outcome
+  // than stopping. It also stops the failure surfacing as "no postings
+  // matched the target titles", which sends whoever reads it off editing
+  // criteria.json when the real cause is a dead link.
+  //
+  // Both conditions are required - a posting-shaped request AND a
+  // board-shaped destination - so a posting that merely canonicalises its
+  // URL, or hops to an embed host the way Ashby's ?ashby_jid= links do,
+  // still classifies as a job.
+  const landed = page.url();
+  const strip = (u: string) => u.split(/[?#]/)[0].replace(/\/+$/, "");
+  const askedForOnePosting =
+    /\/(jobs?|careers?|vacanc(y|ies)|positions?|openings?|postings?)\/[^/?#]{2,}/i.test(url) ||
+    /[?&][a-z]*_?(jid|job_?id|requisition_?id)=/i.test(url);
+  const deadPosting = askedForOnePosting && strip(landed) !== strip(url);
+
   // A board's defining feature is many distinct posting links.
-  if (signals.postingLinks >= 5) return { kind: "board", reason: `found ${signals.postingLinks} job links` };
+  if (signals.postingLinks >= 5)
+    return deadPosting
+      ? { kind: "gone", reason: `it redirected to ${landed}` }
+      : { kind: "board", reason: `found ${signals.postingLinks} job links` };
   // A posting: an apply affordance (or a form) plus a substantial description.
   if ((signals.hasApply || signals.hasForm) && signals.textLength > 1200)
     return { kind: "job", reason: "has an apply action and a full description" };
-  if (signals.postingLinks >= 2) return { kind: "board", reason: `found ${signals.postingLinks} job links` };
+  if (signals.postingLinks >= 2)
+    return deadPosting
+      ? { kind: "gone", reason: `it redirected to ${landed}` }
+      : { kind: "board", reason: `found ${signals.postingLinks} job links` };
   // The job-id parameter is matched with an optional vendor prefix
   // ("ashby_jid", "gh_jid", ...) rather than a bare alternation: [?&]jid=
   // cannot match "?ashby_jid=", since the character before "jid" there is
