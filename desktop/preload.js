@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("seekr", {
   sendEnter: () => ipcRenderer.invoke("send-enter"),
   stop: () => ipcRenderer.invoke("stop"),
   reset: () => ipcRenderer.invoke("reset"),
+  saveReport: (payload) => ipcRenderer.invoke("save-report", payload),
   on: (channel, cb) => {
     const allowed = [
       "queue-started",

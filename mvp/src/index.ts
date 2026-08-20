@@ -210,6 +210,29 @@ else if (useProfile) console.log(`  -> browser profile: ${profileDir} (verificat
 // run therefore closes only its own page.
 const browser = { close: attached ? async () => void (await page.close().catch(() => {})) : () => context.close() };
 
+/**
+ * Ends a run that cannot continue, capturing the page as it stands first.
+ *
+ * The --snapshot hook in the main flow fires only after openApplicationForm
+ * succeeds, so every failure BEFORE that point produced no snapshot at all -
+ * which is exactly when the page is most worth having. A Trillium Staffing
+ * posting misclassified as a board left nothing to inspect but a log line;
+ * diagnosing it needed the live site re-probed by hand, twice, because the
+ * page it actually saw was gone.
+ *
+ * Captured under the same corpus root, so a failure can be replayed by the
+ * regression harness the same way a filled form can.
+ */
+async function stopEarly(reason: string): Promise<void> {
+  if (args["snapshot"]) {
+    const title = await page.title().catch(() => "page");
+    const dir = await captureFormSnapshot(page, args["snapshot"], ambiguousUrl || jobUrl || careerUrl || "", `${title} - ${reason}`);
+    if (dir) console.log(`  -> page snapshot saved for reporting: ${dir}`);
+  }
+  await browser.close();
+  process.exit(0);
+}
+
 try {
   // Work out what kind of link this is, so the caller doesn't have to.
   if (ambiguousUrl) {
@@ -219,14 +242,12 @@ try {
       console.log(`  -> This posting is no longer listed (${verdict.reason}).`);
       console.log(`     The employer took it down - the link now lands on their careers board.`);
       console.log(`     Nothing was run. Your criteria are fine; this is a dead link, not a filter problem.`);
-      await browser.close();
-      process.exit(0);
+      await stopEarly("posting removed");
     }
     if (verdict.kind === "unknown") {
       console.log(`  -> This doesn't look like a job posting or a careers page (${verdict.reason}).`);
       console.log(`     Nothing was run. Check the link and try again.`);
-      await browser.close();
-      process.exit(0);
+      await stopEarly("unclassifiable link");
     }
     console.log(`  -> ${verdict.kind === "job" ? "a single job posting" : "a careers/listings page"} (${verdict.reason})`);
     if (verdict.kind === "job") jobUrl = ambiguousUrl;
@@ -254,8 +275,7 @@ try {
     console.log(`  -> ${titleMatches.length} match target titles [${targetTitles.join(", ")}]`);
     if (titleMatches.length === 0) {
       console.log("No postings matched the target titles. Try broader keywords.");
-      await browser.close();
-      process.exit(0);
+      await stopEarly("no title matches");
     }
 
     const locationMatches = filterByLocation(titleMatches, criteria);
@@ -266,8 +286,7 @@ try {
     }
     if (locationMatches.length === 0) {
       console.log("No postings survived the location filter.");
-      await browser.close();
-      process.exit(0);
+      await stopEarly("no location matches");
     }
 
     const candidates: CandidateJob[] = [];
@@ -283,8 +302,7 @@ try {
 
     if (candidates.length === 0) {
       console.log("No postings survived the hard-requirements filter.");
-      await browser.close();
-      process.exit(0);
+      await stopEarly("no candidates after hard requirements");
     }
 
     console.log(`\nAsking Claude to rank ${candidates.length} candidate posting(s) against the resume...`);
@@ -300,8 +318,7 @@ try {
         `\nBest candidate "${best.job.title}" scored ${best.score.toFixed(0)}, below the minimum match score of ${minMatchScore}.`
       );
       console.log(`No posting was a strong enough fit to fill out. Try different titles, or lower --min-score.`);
-      await browser.close();
-      process.exit(0);
+      await stopEarly("below minimum match score");
     }
 
     console.log(`\nBest match: "${best.job.title}" (score ${best.score.toFixed(0)})\n  ${best.job.url}`);

@@ -168,9 +168,17 @@ $("continue").addEventListener("click", async () => {
 });
 
 let queueTotal = 1;
+// Kept so a problem report can include what the UI actually rendered,
+// not just the scrollback.
+let batchResults = [];
+let batchStartedAt = 0;
+let batchUrls = [];
 
-window.seekr.on("queue-started", ({ total }) => {
+window.seekr.on("queue-started", ({ total, urls }) => {
   queueTotal = total;
+  batchResults = [];
+  batchStartedAt = Date.now();
+  batchUrls = urls || [];
 });
 
 window.seekr.on("job-started", ({ index, total, url, command }) => {
@@ -191,6 +199,7 @@ window.seekr.on("run-awaiting-input", ({ index }) => {
 });
 
 window.seekr.on("job-finished", ({ index, url, status, code, report }) => {
+  batchResults.push({ index, url, status, code, report });
   $("pause").classList.add("hidden");
   if (status === "review") {
     appendLog(`\n[shell] Link ${index + 1} filled. Its browser window is open for review.\n`);
@@ -302,3 +311,54 @@ function renderReport(r, { index, status, url }) {
 
   $("results").appendChild(card);
 }
+
+// ---- problem reports ----------------------------------------------------
+//
+// Deliberately three prompted questions rather than one blank box. A blank
+// box reliably produces 'it didn't work', which is the one thing already
+// obvious from the log; what is missing from the log is what the page
+// looked like and what was expected instead.
+//
+// Available whether or not a run is in progress - the runs worth reporting
+// are usually the ones that already stopped.
+const reportPanel = () => $("reportPanel");
+
+$("report").addEventListener("click", () => {
+  reportPanel().classList.toggle("hidden");
+  $("reportStatus").textContent = "";
+  if (!reportPanel().classList.contains("hidden")) $("rExpected").focus();
+});
+
+$("reportCancel").addEventListener("click", () => reportPanel().classList.add("hidden"));
+
+$("reportSave").addEventListener("click", async () => {
+  const btn = $("reportSave");
+  btn.disabled = true;
+  $("reportStatus").textContent = "Saving…";
+  const res = await window.seekr.saveReport({
+    expected: $("rExpected").value,
+    actual: $("rActual").value,
+    page: $("rPage").value,
+    log: logEl.textContent,
+    results: batchResults,
+    urls: batchUrls.length ? batchUrls : linkInputs().map((i) => i.value.trim()).filter(Boolean),
+    startedAt: batchStartedAt,
+  });
+  btn.disabled = false;
+  if (!res.ok) {
+    $("reportStatus").textContent = `Could not save: ${res.error}`;
+    return;
+  }
+  $("reportStatus").textContent = "";
+  const done = document.createElement("span");
+  done.className = "status";
+  done.textContent = `Saved${res.snapshots ? ` with ${res.snapshots} captured page(s)` : ""} - `;
+  const open = document.createElement("button");
+  open.className = "ghost small";
+  open.textContent = "Open folder";
+  open.addEventListener("click", () => window.seekr.openPath(res.path));
+  const holder = $("reportStatus");
+  holder.textContent = "";
+  holder.append(done, open);
+  for (const id of ["rExpected", "rActual", "rPage"]) $(id).value = "";
+});

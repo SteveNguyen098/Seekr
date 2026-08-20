@@ -244,6 +244,7 @@ ipcMain.handle("run", async (_e, opts) => {
     return { ok: false, error: `Could not find tsx at ${tsxCli}. Run "npm install" in the mvp folder.` };
   }
 
+  const batchStartedAt = Date.now();
   batch = {
     resume,
     tsxCli,
@@ -257,6 +258,7 @@ ipcMain.handle("run", async (_e, opts) => {
     outDir: opts.outDir || path.join(MVP_DIR, "out", "Electron App Stuff"),
     headed: opts.headed !== false,
     cdpPort: await freePort(),
+    startedAt: batchStartedAt,
   };
   jobs = urls.map((url, index) => ({ index, url, proc: null, jsonOut: null, advanced: false }));
 
@@ -391,6 +393,100 @@ ipcMain.handle("stop", async () => {
 ipcMain.handle("reset", async () => {
   await killActiveRun();
   return true;
+});
+
+// ---- problem reports ----------------------------------------------------
+//
+// Packages everything needed to diagnose a broken application into one
+// folder: what the user saw, what the tool logged, the structured per-link
+// results, and the actual pages captured during the batch.
+//
+// Written as SEPARATE FILES rather than one blob on purpose. These reports
+// carry the candidate's name, email, phone and every answer given, so
+// sharing one means choosing what to share - which is a file-picking
+// problem if the parts are separate and a redaction problem if they are
+// not. Kept local; nothing is uploaded anywhere.
+//
+// The captured pages are the point. A snapshot replays through the
+// regression harness, so a report can become a permanent test rather than
+// a folder nobody opens again.
+ipcMain.handle('save-report', async (_e, payload) => {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const root = path.join(MVP_DIR, 'out', 'reports', stamp);
+    fs.mkdirSync(root, { recursive: true });
+
+    const urls = payload.urls || [];
+    const md = [
+      '# Seekr problem report',
+      '',
+      `- **When:** ${new Date().toISOString()}`,
+      `- **Links:**`,
+      ...urls.map((u) => `  - ${u}`),
+      '',
+      '## What I expected',
+      '',
+      (payload.expected || '_(not filled in)_').trim(),
+      '',
+      '## What actually happened',
+      '',
+      (payload.actual || '_(not filled in)_').trim(),
+      '',
+      '## What the page looks like',
+      '',
+      (payload.page || '_(not filled in)_').trim(),
+      '',
+      '## Files in this report',
+      '',
+      '- `output.log` - full terminal output of the run',
+      '- `results/` - the structured per-link results the UI rendered',
+      '- `snapshots/` - pages captured during this batch, replayable via `npm run test:snapshots`',
+      '',
+    ].join(String.fromCharCode(10));
+    fs.writeFileSync(path.join(root, 'report.md'), md, 'utf-8');
+    fs.writeFileSync(path.join(root, 'output.log'), payload.log || '', 'utf-8');
+
+    // Structured results, one file per link.
+    const results = payload.results || [];
+    if (results.length) {
+      const dir = path.join(root, 'results');
+      fs.mkdirSync(dir, { recursive: true });
+      results.forEach((r, i) => {
+        fs.writeFileSync(path.join(dir, `link-${i + 1}.json`), JSON.stringify(r, null, 2), 'utf-8');
+      });
+    }
+
+    // Snapshots captured during this batch. Matched by mtime rather than by
+    // name: a failure snapshot is slugged from the page title, which does
+    // not resemble the link that produced it.
+    const since = payload.startedAt || 0;
+    const snapRoot = path.join(MVP_DIR, 'snapshots');
+    let copied = 0;
+    if (fs.existsSync(snapRoot)) {
+      for (const name of fs.readdirSync(snapRoot)) {
+        const src = path.join(snapRoot, name, 'page.mhtml');
+        if (!fs.existsSync(src)) continue;
+        if (fs.statSync(src).mtimeMs < since) continue;
+        const dst = path.join(root, 'snapshots', name);
+        fs.mkdirSync(dst, { recursive: true });
+        for (const f of ['page.mhtml', 'meta.json', 'expected.json']) {
+          const from = path.join(snapRoot, name, f);
+          if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dst, f));
+        }
+        copied++;
+      }
+    }
+
+    // The preview screenshot, if this batch produced one.
+    const shot = path.join(MVP_DIR, 'out', 'Electron App Stuff', 'application-preview.png');
+    if (fs.existsSync(shot) && fs.statSync(shot).mtimeMs >= since) {
+      fs.copyFileSync(shot, path.join(root, 'application-preview.png'));
+    }
+
+    return { ok: true, path: root, snapshots: copied };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 function send(channel, payload) {

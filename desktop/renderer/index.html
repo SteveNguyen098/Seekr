@@ -26,6 +26,7 @@
         <button id="run" class="primary">Run</button>
         <button id="stop" class="ghost" disabled>Stop</button>
         <button id="reset" class="ghost" title="Close out this batch - including every browser window still open for review - and start over with new links. No need to quit the app.">New run</button>
+        <button id="report" class="ghost" title="Package this run - log, results and captured pages - into a folder you can look at or share.">Report a problem</button>
         <span id="status" class="status">Idle</span>
       </div>
 
@@ -42,6 +43,25 @@
         <p id="pauseMsg"></p>
       </div>
       <button id="continue" class="primary">Continue</button>
+    </section>
+
+    <section id="reportPanel" class="reportPanel hidden">
+      <h2>Report a problem</h2>
+      <p class="hint">
+        Saved to a folder on this machine - nothing is uploaded. It includes the terminal
+        output, the per-link results, and any pages captured during this run.
+      </p>
+      <label class="field"><span>What did you expect to happen?</span>
+        <textarea id="rExpected" rows="2" placeholder="e.g. it should have filled the application form"></textarea></label>
+      <label class="field"><span>What actually happened?</span>
+        <textarea id="rActual" rows="2" placeholder="e.g. it said no postings matched and stopped"></textarea></label>
+      <label class="field"><span>What does the page look like? (anything unusual - popups, logins, multiple steps)</span>
+        <textarea id="rPage" rows="2" placeholder="e.g. Apply opens a popup asking to create an account"></textarea></label>
+      <div class="actions">
+        <button id="reportSave" class="primary">Save report</button>
+        <button id="reportCancel" class="ghost">Cancel</button>
+        <span id="reportStatus" class="status"></span>
+      </div>
     </section>
 
     <!-- One card is appended here per link, as each finishes filling. -->
