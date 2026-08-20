@@ -119,6 +119,27 @@ const MUTATIONS = [
     to: "const isGenericChrome = false;",
   },
   {
+    bug: "stop skipping the site's job-search box, so it gets filled as the application",
+    fixture: "trillium-signup",
+    from: "        } else if (inSiteSearchForm) {",
+    to: "        } else if (false && inSiteSearchForm) {",
+  },
+  {
+    // The other direction: scoping by FIELD NAME instead of by form would
+    // drop a real "location" field out of a working application form -
+    // a real Greenhouse form has a required "Location (City)" input.
+    bug: "scope the search-box rule by field name instead of by form",
+    fixture: "trillium-signup",
+    from: "        const inSiteSearchForm = (() => {",
+    to: "        const inSiteSearchForm = (() => { if (/keywords|location/i.test(el.getAttribute('name') || '')) return true;",
+  },
+  {
+    bug: "let the label walk claim text from another field's block",
+    fixture: "trillium-signup",
+    from: "&& !isFileChrome && !isGenericChrome && !isAnotherFieldsBlock) label = text;",
+    to: "&& !isFileChrome && !isGenericChrome) label = text;",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

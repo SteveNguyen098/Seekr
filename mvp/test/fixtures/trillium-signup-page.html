@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+Two bugs from one real page: a Trillium Staffing signup page, which carries
+THREE separate forms - a login modal, the site's job-search box, and the
+actual apply form.
+
+BUG 1: the site's job-search box was filled as if it were the application.
+  The run typed the job title into "Search keywords" and the city into
+  "Search location", and reported both as answers it had filled. Nothing
+  about these inputs is hidden or unreachable - they are ordinary visible
+  text boxes - so no visibility rule can catch them. The containing FORM is
+  the signal: it posts to /search.
+
+  Scoped to the form, never to the input's name, and that matters:
+  "location" and "keywords" are perfectly ordinary APPLICATION field names -
+  a real Greenhouse form (12twenty) has a required "Location (City)" input -
+  so a name-based rule would silently drop real fields. The real form below
+  carries its own "location" field to pin exactly that.
+
+BUG 2: the resume upload was labelled "Enter your email address".
+  The file input has no label of any kind - no aria-label, no label[for], no
+  wrapper - so it reached the DOM-proximity walk, whose first candidate was
+  the neighbouring block:
+
+    <div id="signupemail"><label for="email">Enter your email address</label>
+      <input id="email"></div>
+
+  ...a div owning both another field's label AND that field's input. The
+  groupQuestion walk has always rejected candidates carrying form controls;
+  the main label walk did not.
+
+  Nothing downstream actually misfiled anything - the resume check keys on
+  id/name, so the upload worked - but the report read as though a .docx had
+  been typed into an email box.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Apply - Example Staffing</title>
+  </head>
+  <body>
+    <header>
+      <form action="/jobs/search" id="searchform">
+        <label for="kw">Search keywords</label>
+        <input id="kw" name="keywords" type="text" />
+        <label for="loc">Search location</label>
+        <input id="loc" name="location" type="text" />
+      </form>
+    </header>
+
+    <main>
+      <form action="/jobs/signup" id="signupform">
+        <fieldset>
+          <legend>Apply for the Autonomous Vehicle Operator position</legend>
+
+          <div id="signupemail">
+            <label for="email">Enter your email address</label>
+            <input required type="text" id="email" name="email" class="input required" />
+          </div>
+
+          <!-- No label of any kind: must NOT inherit the email field's. -->
+          <div id="signupother">
+            <input type="file" id="uploadresume" name="resume" />
+          </div>
+
+          <!-- A "location" field inside the REAL form. Same name as the
+               search box's, and it must survive - which is why the rule
+               keys on the form, not the field name. -->
+          <label for="city">Location (City)*</label>
+          <input type="text" id="city" name="location" required />
+        </fieldset>
+      </form>
+    </main>
+  </body>
+</html>

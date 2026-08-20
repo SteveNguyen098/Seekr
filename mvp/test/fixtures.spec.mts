@@ -210,6 +210,37 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "trillium-signup-page.html",
+    bug: "the site's search box was filled as the application, and the resume upload stole the email field's label",
+    check(fields, t) {
+      // --- the site search box ---
+      const kw = one(fields, "keywords");
+      const loc = one(fields, "location");
+      t.ok("search inputs are still discovered", !!kw && !!loc);
+      t.ok("...and both are skipped", !!kw?.skipAlways && !!loc?.skipAlways);
+      t.ok("...for a reason naming the search box", /search/i.test(kw?.skipReason ?? ""));
+
+      // Scoped to the FORM, not the field name. The real form carries its
+      // own "location" field - the same name the search box uses - and it
+      // must survive, or a name-based rule would drop real fields.
+      const realLoc = fields.find((f) => f.idOrName.split(" ").includes("city"));
+      t.ok("the real form's own location field is discovered", !!realLoc);
+      t.is("...and is NOT skipped despite sharing the name 'location'", realLoc?.skipAlways, false);
+      t.is("...and keeps its own label", realLoc?.label, "Location (City)*");
+
+      // --- label theft ---
+      const file = fields.find((f) => f.type === "file");
+      t.ok("the resume upload is discovered", !!file);
+      t.ok("it does NOT steal the email field's label", !/enter your email/i.test(file?.label ?? ""));
+      t.ok("...and is still matchable as a resume field via id/name", /resume/i.test(file?.idOrName ?? ""));
+
+      // The email field keeps its own label - the guard must not strip the
+      // owner's label, only stop a neighbour claiming it.
+      const email = fields.find((f) => f.type === "text" && f.idOrName.split(/\s+/).includes("email"));
+      t.is("the email field keeps its own label", email?.label, "Enter your email address");
+    },
+  },
+  {
     file: "hidden-modal-fields.html",
     bug: "fields in a collapsed sign-in modal were filled as if they were part of the form",
     async check(fields, t, ctx) {

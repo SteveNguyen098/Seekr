@@ -513,6 +513,29 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             // walking to find that real label instead of settling for
             // chrome the same way a cleared-then-reset label would.
             const isFileChrome = type === "file" && /no file selected/i.test(text);
+            // A candidate carrying form controls of its own is ANOTHER
+            // field's block, and reading its text attributes that field's
+            // question to this one. Measured on Trillium, whose resume
+            // upload has no label of any kind and so reached this walk,
+            // where the first candidate was
+            // <div id="signupemail"><label for="email">Enter your email
+            // address</label><input id="email"></div> - a div owning the
+            // neighbouring field's label AND that field's input. The
+            // report then read as though a .docx had been typed into an
+            // email box (nothing was actually misfiled - the resume check
+            // keys on id/name - but the label was another field's).
+            //
+            // Scoped to file inputs, and NOT generalised, because the
+            // general form is a regression. Applied to every type it
+            // destroyed real question labels on three captured snapshots:
+            // Greenhouse pairs a question block with a react-select
+            // duplicate input, so the block legitimately contains a
+            // control, and rejecting it sent the walk up to the form
+            // header - turning "Do you have any contractual obligations..."
+            // into "Apply for this job*indicates a required field". A file
+            // input has no such paired-duplicate pattern, so the narrow
+            // rule is the one the evidence actually supports.
+            const isAnotherFieldsBlock = type === "file" && !!prevEl?.querySelector("input, select, textarea");
             // Clearing a generic aria-label/placeholder above isn't enough:
             // this walk can land on the exact same word independently, from
             // a *different* source. Measured on a real Greenhouse snapshot
@@ -527,7 +550,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             // Claude answering one of them wrong. Rejecting it here lets the
             // walk keep climbing to the real question text instead.
             const isGenericChrome = GENERIC_LABEL_RE.test(text);
-            if (text.length > 2 && text.length < 300 && !isFileChrome && !isGenericChrome) label = text;
+            if (text.length > 2 && text.length < 300 && !isFileChrome && !isGenericChrome && !isAnotherFieldsBlock) label = text;
             node = node.parentElement;
           }
         }
@@ -737,6 +760,37 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             '#CybotCookiebotDialog, .osano-cm-window, #truste-consent-track, .qc-cmp2-container, #usercentrics-root, .cookie-consent, #cookie-consent'
         );
 
+        // The site's own job-search box is not part of the application, but
+        // it is a perfectly ordinary visible text input, so no
+        // visibility/reachability rule can catch it. Measured on a Trillium
+        // Staffing signup page, which carries three separate forms - a login
+        // modal, a search box, and the real signup form - and the run typed
+        // the job title into "Search keywords" and the city into "Search
+        // location", reporting both as answers it had filled.
+        //
+        // Scoped to the containing FORM's own identity (its action path, id
+        // or class), never to the input's own name. That distinction is
+        // load-bearing: "location" and "keywords" are perfectly ordinary
+        // APPLICATION field names - a real Greenhouse form (12twenty) has a
+        // required "Location (City)" input - so a name-based rule would
+        // silently drop real fields. A form whose action posts to /search is
+        // unambiguous in a way an individual input never is.
+        //
+        // Separately, and already handled: input type="search" controls are
+        // dropped wholesale at the end of this function, which is why a
+        // country-code picker never reaches this check at all.
+        const inSiteSearchForm = (() => {
+          const f = el.closest("form");
+          if (!f) return false;
+          let actionPath = "";
+          try {
+            actionPath = new URL(f.getAttribute("action") || "", document.baseURI).pathname;
+          } catch {
+            actionPath = f.getAttribute("action") || "";
+          }
+          return /(^|\/)search(\/|$)/i.test(actionPath) || /(^|[^a-z])search([^a-z]|$)/i.test(`${f.id} ${f.className}`);
+        })();
+
         // Two distinct ways a real ATS wires a visible custom-styled control
         // to an aria-hidden native input: aria-labelledby pointing at the
         // visible text (Oracle's privacy checkbox, Rippling's SMS radios),
@@ -822,6 +876,9 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         } else if (inConsentManager) {
           skipAlways = true;
           skipReason = "part of the page's cookie/consent manager, not the application form";
+        } else if (inSiteSearchForm) {
+          skipAlways = true;
+          skipReason = "part of the site's job-search box, not the application form";
         }
 
         const groupName = type === "radio" ? el.getAttribute("name") || "" : "";
