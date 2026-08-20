@@ -1,0 +1,62 @@
+<!doctype html>
+<!--
+The false-positive guard, and the reason the auth-wall check keys on a
+VISIBLE password field rather than on wording.
+
+A great many real application forms carry "Already have an account? Sign in"
+in a header, and some ship a hidden login modal the framework pre-renders but
+never shows. Stopping on either would abandon runs on perfectly fillable
+forms - including the platform this tool is tested against most, which shows
+exactly that link above a complete, working Greenhouse form.
+
+So this page has:
+  - the words "Sign in" / "log in" in visible text
+  - a real, complete application form
+  - a hidden password input, of the kind a pre-rendered login modal leaves in
+    the DOM
+
+and must still be filled normally. Only a password field a human could
+actually type into counts as a wall.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Job Application for Implementation Manager at Example Corp</title>
+  </head>
+  <body>
+    <header>
+      <p>Already have an account? <a href="/login">Sign in</a> to autofill your details, or just log in later.</p>
+    </header>
+
+    <!-- Pre-rendered login modal, never shown. Must not read as a wall. -->
+    <div id="login-modal" style="display: none">
+      <input name="password" type="password" />
+    </div>
+
+    <main>
+      <h1>Implementation Manager</h1>
+      <p>
+        Example Corp is hiring an Implementation Manager to lead customer onboarding from contract
+        signature through go-live, coordinating across Sales, Support, and Product while owning the
+        implementation plan for a portfolio of accounts.
+      </p>
+
+      <h2>Apply for this job</h2>
+      <form>
+        <label for="first">First Name *</label>
+        <input id="first" name="first_name" type="text" required />
+
+        <label for="last">Last Name *</label>
+        <input id="last" name="last_name" type="text" required />
+
+        <label for="email">Email *</label>
+        <input id="email" name="email" type="email" required />
+
+        <label for="resume">Resume/CV *</label>
+        <input id="resume" name="resume" type="file" required />
+
+        <button type="submit">Submit application</button>
+      </form>
+    </main>
+  </body>
+</html>

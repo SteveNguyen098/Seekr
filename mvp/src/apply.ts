@@ -782,7 +782,18 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
 
         let skipAlways = false;
         let skipReason = "";
-        if (honeypotNamed) {
+        // A credential field, never filled under any circumstances. The
+        // account-wall check in fillApplication should stop the run long
+        // before this matters, but that check keys on visibility and this
+        // one does not - so a password input the wall check dismissed as
+        // hidden still cannot be typed into. Measured need: a real run
+        // reached [name="password"] on a staffing site's login page and
+        // attempted it; the attempt failed for unrelated reasons, which is
+        // not a guarantee worth relying on twice.
+        if (type === "password" || /(^|[^a-z])password([^a-z]|$)/i.test(`${el.id} ${el.getAttribute("name") || ""}`)) {
+          skipAlways = true;
+          skipReason = "password/credential field - never filled by this tool";
+        } else if (honeypotNamed) {
           skipAlways = true;
           skipReason = "hidden anti-bot (honeypot) field - deliberately left empty";
         } else if (ariaHiddenAttr && !hasVisibleLabelPartner) {
@@ -2997,6 +3008,52 @@ async function readValidationErrors(page: Page): Promise<string[]> {
 }
 
 /** True if the page currently shows a CAPTCHA / bot challenge. */
+/**
+ * True when the page in front of us is a sign-in / registration wall rather
+ * than an application form, returning a short description of what was seen.
+ *
+ * Keyed on a VISIBLE password field, which is the one control that means
+ * "authenticate" and nothing else. A job application never asks for a
+ * password; a login or signup always does.
+ *
+ * Deliberately not keyed on wording ("Sign in", "Create account"): plenty of
+ * real application forms carry a "Already have an account? Sign in" link in
+ * a header or footer while the form itself is perfectly fillable, and
+ * stopping on that would abandon working runs. Confirmed on the platforms
+ * this tool is tested against most, which show exactly that link above a
+ * complete Greenhouse form.
+ *
+ * Visibility matters for the same reason: a hidden password input is a
+ * common artifact of password managers and of frameworks pre-rendering a
+ * login modal that is never shown. Only a password field a human could
+ * actually type into counts.
+ */
+export async function detectAuthWall(page: Page): Promise<string | null> {
+  const contexts: FormContext[] = allContexts(page);
+  for (const ctx of contexts) {
+    const found = await ctx
+      .evaluate(() => {
+        const pw = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"], input[name="password" i]'));
+        const visible = pw.find((el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return false;
+          const cs = getComputedStyle(el);
+          return cs.visibility !== "hidden" && cs.display !== "none";
+        });
+        if (!visible) return null;
+        // Report what a human would recognise, so the note names the actual
+        // wall rather than just "a password field".
+        const text = (document.body.innerText || "").toLowerCase();
+        if (/create (an )?account|sign ?up|register/.test(text)) return "sign-in or account registration";
+        if (/sign ?in|log ?in/.test(text)) return "sign-in";
+        return "a password-protected step";
+      })
+      .catch(() => null);
+    if (found) return found;
+  }
+  return null;
+}
+
 export async function detectCaptcha(page: Page): Promise<boolean> {
   // Only a challenge a HUMAN must actually solve counts. The presence of a
   // CAPTCHA frame does not: Google's invisible reCAPTCHA loads a background
@@ -3101,6 +3158,32 @@ export async function fillApplication(
         notes.push(`STOPPED on page ${pageNum}: this step requires a verification code sent to you, which the tool can't read. Re-run with --headed to enter it yourself and let the run continue.`);
         break;
       }
+    }
+
+    // An account wall: sign-in or registration standing between the Apply
+    // click and the real form. Like the verification-code check above, this
+    // MUST run before filling rather than after - the whole point is not to
+    // touch credential fields, and "we tried and it didn't work" is not the
+    // same guarantee as "we never tried".
+    //
+    // Measured on a Trillium Staffing posting, whose Apply leads to
+    // /jobs/signup/?jobid=<id>. The login page was discovered as the
+    // application form and filled: the nav search box took the job title and
+    // location as if they were answers, one control labelled "Enter your
+    // email address" received the resume FILENAME, and a
+    // [name="password"] field was attempted outright. That attempt failed,
+    // but only incidentally - nothing in the pipeline was stopping it.
+    //
+    // Creating accounts and entering passwords is not something this tool
+    // does, so the honest outcome is to stop and say so. The tailored resume
+    // is already written by this point (index.ts tailors before opening the
+    // form), so the run still leaves the candidate something usable.
+    const authWall = await detectAuthWall(page);
+    if (authWall) {
+      notes.push(
+        `HARD STOP on page ${pageNum}: this employer requires an account (${authWall}) before the application form. The tool never creates accounts or enters passwords - sign in yourself in the open window, then apply manually. Your tailored resume was already generated and saved.`
+      );
+      break;
     }
 
     const res = await fillCurrentPage(page, anthropic, resume, resumeFilePath, jobDescription, context, jobTitle);

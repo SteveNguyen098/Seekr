@@ -15,8 +15,8 @@
  *   npm test
  *   npm test -- paycom          # run only matching fixtures
  */
-import { chromium, type Browser } from "playwright";
-import { findFormContext, discoverFields, type DiscoveredField } from "../src/apply.js";
+import { chromium, type Browser, type Page } from "playwright";
+import { findFormContext, discoverFields, detectAuthWall, type DiscoveredField } from "../src/apply.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -31,7 +31,12 @@ interface Case {
   file: string;
   /** The bug this exists to prevent coming back. */
   bug: string;
-  check(fields: DiscoveredField[], t: T, ctx: Ctx): void | Promise<void>;
+  /**
+   * `ctx` is the form context discoverFields ran against (page or frame);
+   * `page` is the whole page, for checks that are page-level rather than
+   * field-level - detectAuthWall, for instance, walks every frame itself.
+   */
+  check(fields: DiscoveredField[], t: T, ctx: Ctx, page: Page): void | Promise<void>;
 }
 
 const byName = (fields: DiscoveredField[], name: string) => fields.filter((f) => f.groupName === name || f.idOrName.split(/\s+/).includes(name));
@@ -205,6 +210,31 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "auth-wall-login.html",
+    bug: "a login page was filled as an application form, including an attempt at a password field",
+    async check(fields, t, _ctx, page) {
+      const wall = await detectAuthWall(page);
+      t.ok("the account wall is detected", wall !== null);
+      t.ok("...and named in a way a human recognises", /sign-?in|account|registration/i.test(wall ?? ""));
+
+      const pw = fields.find((f) => f.type === "password");
+      t.ok("the password field is discovered at all", !!pw);
+      t.is("...and is never fillable", pw?.skipAlways, true);
+      t.ok("...for a reason that names credentials", /password|credential/i.test(pw?.skipReason ?? ""));
+    },
+  },
+  {
+    file: "real-form-with-signin-link.html",
+    bug: "stopping on any page that merely mentions signing in, abandoning fillable forms",
+    async check(fields, t, _ctx, page) {
+      t.is("a hidden login modal is NOT an account wall", await detectAuthWall(page), null);
+      t.ok("the real application fields are still discovered", fields.some((f) => /first name/i.test(f.label)));
+      t.ok("the resume upload is still discovered", fields.some((f) => f.type === "file"));
+      const pw = fields.find((f) => f.type === "password");
+      t.is("the hidden password input is still never fillable", pw?.skipAlways, true);
+    },
+  },
+  {
     file: "meridianlink-iframe-host.html",
     bug: "a valid job link was rejected because the form lived in an embedded iframe",
     check(fields, t, ctx) {
@@ -245,7 +275,7 @@ async function run(browser: Browser, c: Case) {
     await page.goto(pathToFileURL(path.join(FIXTURES, c.file)).href, { waitUntil: "load" });
     const ctx = await findFormContext(page);
     const fields = await discoverFields(ctx);
-    await c.check(fields, t, ctx);
+    await c.check(fields, t, ctx, page);
   } catch (err) {
     failed++;
     results.push(`    FAIL  threw: ${(err as Error).message.split("\n")[0]}`);

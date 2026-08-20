@@ -1,0 +1,59 @@
+<!doctype html>
+<!--
+BUG: Seekr filled a login page as if it were an application form, and
+attempted a password field.
+
+Measured on a Trillium Staffing posting, whose Apply leads to
+/jobs/signup/?jobid=<id>. The sign-in page was discovered as "the form":
+
+  Filled 4 field(s)...
+    - [p1] Enter your email address: Steven_Nguyen_Resume_..._Operator.docx
+    - [p1] Search keywords: Autonomous Vehicle Operator
+    - [p1] Search location: Atlanta, GA
+  2 REQUIRED field(s) still need your input...
+    - [p1] Trillium Staffing - Jobs: failed to fill field "[name="password"]"
+
+The password attempt failed, but only incidentally - nothing was stopping
+it. Creating accounts and entering passwords is not something this tool
+does, so the correct outcome is a hard stop naming the wall, with the
+tailored resume (already written before the form opens) left for the
+candidate to apply with by hand.
+
+The nav search box and the resume-filename-into-an-email-field are both
+reproduced here too, since they are what "filled 4 fields" actually meant.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign In - Example Staffing</title>
+  </head>
+  <body>
+    <header>
+      <form action="/jobs/search/">
+        <label for="kw">Search keywords</label>
+        <input id="kw" name="keywords" type="text" />
+        <label for="loc">Search location</label>
+        <input id="loc" name="location" type="text" />
+      </form>
+    </header>
+
+    <main>
+      <h1>Sign In to Continue Your Application</h1>
+      <p>
+        To apply for Autonomous Vehicle Operator you need an account. Sign in below, or create an
+        account if this is your first time applying with us. Your profile carries across every
+        branch, so you only enter your history once.
+      </p>
+      <form action="/jobs/signin/">
+        <label for="login-email">Enter your email address</label>
+        <input id="login-email" name="email" type="text" />
+
+        <label for="login-pw">Password</label>
+        <input id="login-pw" name="password" type="password" />
+
+        <label><input type="checkbox" name="remember" /><span>Remember me</span></label>
+        <input type="submit" value="Sign In" />
+      </form>
+    </main>
+  </body>
+</html>

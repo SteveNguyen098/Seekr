@@ -119,6 +119,26 @@ const MUTATIONS = [
     to: "const isGenericChrome = false;",
   },
   {
+    bug: "stop recognising an account wall, so a login page gets filled",
+    fixture: "auth-wall-login",
+    from: "if (!visible) return null;",
+    to: "if (visible) return null;",
+  },
+  {
+    bug: "let a password field be filled like any other input",
+    fixture: "auth-wall-login",
+    from: 'skipReason = "password/credential field - never filled by this tool";',
+    to: 'skipReason = "";\n          skipAlways = false;',
+  },
+  {
+    // The false-positive direction: keying on wording rather than a visible
+    // password field would stop on any form that merely links to a sign-in.
+    bug: "treat a hidden login modal as an account wall",
+    fixture: "real-form-with-signin-link",
+    from: "          if (r.width === 0 || r.height === 0) return false;",
+    to: "          if (false) return false;",
+  },
+  {
     bug: "stop rejecting file-picker chrome as a label",
     fixture: "bamboohr-file",
     from: 'const isFileChrome = type === "file" && /no file selected/i.test(text);',
