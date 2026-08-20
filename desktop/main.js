@@ -413,12 +413,15 @@ ipcMain.handle("reset", async () => {
 ipcMain.handle('save-report', async (_e, payload) => {
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const root = path.join(MVP_DIR, 'out', 'reports', stamp);
+    const slug = (payload.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    const root = path.join(MVP_DIR, 'out', 'reports', slug ? stamp + '-' + slug : stamp);
     fs.mkdirSync(root, { recursive: true });
 
     const urls = payload.urls || [];
     const md = [
       '# Seekr problem report',
+      '',
+      payload.label ? `**Scope:** ${payload.label}` : '**Scope:** the whole batch',
       '',
       `- **When:** ${new Date().toISOString()}`,
       `- **Links:**`,
@@ -456,24 +459,37 @@ ipcMain.handle('save-report', async (_e, payload) => {
       });
     }
 
-    // Snapshots captured during this batch. Matched by mtime rather than by
-    // name: a failure snapshot is slugged from the page title, which does
-    // not resemble the link that produced it.
+    // Snapshots. A PER-LINK report knows exactly which directories the CLI
+    // announced for that link (the shell scrapes the '-> snapshot saved'
+    // lines out of its output), so it copies those and nothing else. A
+    // whole-batch report has no such list and falls back to mtime, which is
+    // right for all-or-nothing but useless for picking one link out of five:
+    // a failure snapshot is slugged from the page TITLE, which need not
+    // resemble the link that produced it.
     const since = payload.startedAt || 0;
     const snapRoot = path.join(MVP_DIR, 'snapshots');
     let copied = 0;
-    if (fs.existsSync(snapRoot)) {
+    const copySnapshot = (dirName) => {
+      const dst = path.join(root, 'snapshots', dirName);
+      fs.mkdirSync(dst, { recursive: true });
+      for (const f of ['page.mhtml', 'meta.json', 'expected.json']) {
+        const from = path.join(snapRoot, dirName, f);
+        if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dst, f));
+      }
+      copied++;
+    };
+
+    const named = (payload.snapshotPaths || []).map((sp) => path.basename(sp));
+    if (named.length) {
+      for (const name of new Set(named)) {
+        if (fs.existsSync(path.join(snapRoot, name, 'page.mhtml'))) copySnapshot(name);
+      }
+    } else if (fs.existsSync(snapRoot)) {
       for (const name of fs.readdirSync(snapRoot)) {
         const src = path.join(snapRoot, name, 'page.mhtml');
         if (!fs.existsSync(src)) continue;
         if (fs.statSync(src).mtimeMs < since) continue;
-        const dst = path.join(root, 'snapshots', name);
-        fs.mkdirSync(dst, { recursive: true });
-        for (const f of ['page.mhtml', 'meta.json', 'expected.json']) {
-          const from = path.join(snapRoot, name, f);
-          if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dst, f));
-        }
-        copied++;
+        copySnapshot(name);
       }
     }
 

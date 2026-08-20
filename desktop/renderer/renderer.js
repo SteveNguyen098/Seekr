@@ -173,21 +173,52 @@ let queueTotal = 1;
 let batchResults = [];
 let batchStartedAt = 0;
 let batchUrls = [];
+// Per-link, so a single application can be reported on its own. The log is
+// accumulated as it arrives rather than sliced out of the scrollback
+// afterwards: run-output already carries the link's index, so splitting by
+// index is exact where re-parsing the combined text would be guesswork.
+const linkLog = new Map();
+const linkSnapshots = new Map();
+const appendLinkLog = (index, text) => {
+  linkLog.set(index, (linkLog.get(index) || '') + text);
+  // The CLI announces every capture it makes, for a filled form and for an
+  // early failure alike. Scraping those lines associates a snapshot with
+  // the link that produced it - the directory is slugged from the page
+  // title, which need not resemble the link at all.
+  const re = /snapshot saved(?: to| for reporting:) *(.+)/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    const dir = m[1].trim();
+    if (!dir) continue;
+    const list = linkSnapshots.get(index) || [];
+    if (!list.includes(dir)) list.push(dir);
+    linkSnapshots.set(index, list);
+  }
+};
 
 window.seekr.on("queue-started", ({ total, urls }) => {
   queueTotal = total;
   batchResults = [];
   batchStartedAt = Date.now();
   batchUrls = urls || [];
+  linkLog.clear();
+  linkSnapshots.clear();
 });
 
 window.seekr.on("job-started", ({ index, total, url, command }) => {
   queueTotal = total;
+  appendLinkLog(index, `[${index + 1}/${total}] ${url}
+$ ${command}
+
+`);
   $("status").textContent = `Filling link ${index + 1} of ${total}…`;
   appendLog(`${index > 0 ? "\n\n" : ""}${"=".repeat(60)}\n[${index + 1}/${total}] ${url}\n${"=".repeat(60)}\n$ ${command}\n\n`);
 });
 
-window.seekr.on("run-output", ({ text }) => appendLog(text));
+window.seekr.on("run-output", ({ index, text }) => {
+  appendLog(text);
+  appendLinkLog(index, text);
+});
 
 // Only ever the mid-run verification pause now. The final "close the
 // browser" prompt is consumed by the main process to advance the queue and
@@ -309,6 +340,19 @@ function renderReport(r, { index, status, url }) {
   }
   card.appendChild(shots);
 
+  // Per-link reporting. Three applications that came out wrong almost
+  // always came out wrong for three different reasons, and one shared
+  // description covering all of them helps nobody - least of all the
+  // snapshot, which loses the note explaining what was wrong with IT.
+  const reportRow = document.createElement("div");
+  reportRow.className = "shots";
+  const reportBtn = document.createElement("button");
+  reportBtn.className = "ghost small";
+  reportBtn.textContent = "Report this application";
+  reportBtn.addEventListener("click", () => openReport({ index, url: url || r?.job?.url || "", status }));
+  reportRow.appendChild(reportBtn);
+  card.appendChild(reportRow);
+
   $("results").appendChild(card);
 }
 
@@ -323,25 +367,55 @@ function renderReport(r, { index, status, url }) {
 // are usually the ones that already stopped.
 const reportPanel = () => $("reportPanel");
 
-$("report").addEventListener("click", () => {
-  reportPanel().classList.toggle("hidden");
+// null = the whole batch; otherwise the one link being reported.
+let reportScope = null;
+
+function openReport(scope) {
+  reportScope = scope;
+  $("reportScope").textContent = scope
+    ? `Reporting link ${scope.index + 1}: ${scope.url}`
+    : "Reporting the whole run - every link, the full log, and any pages captured.";
+  reportPanel().classList.remove("hidden");
   $("reportStatus").textContent = "";
-  if (!reportPanel().classList.contains("hidden")) $("rExpected").focus();
+  $("rExpected").focus();
+  reportPanel().scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+$("report").addEventListener("click", () => {
+  if (!reportPanel().classList.contains("hidden") && !reportScope) {
+    reportPanel().classList.add("hidden");
+    return;
+  }
+  openReport(null);
 });
 
-$("reportCancel").addEventListener("click", () => reportPanel().classList.add("hidden"));
+$("reportCancel").addEventListener("click", () => {
+  reportPanel().classList.add("hidden");
+  reportScope = null;
+});
 
 $("reportSave").addEventListener("click", async () => {
   const btn = $("reportSave");
   btn.disabled = true;
   $("reportStatus").textContent = "Saving…";
+  const scoped = reportScope !== null;
   const res = await window.seekr.saveReport({
     expected: $("rExpected").value,
     actual: $("rActual").value,
     page: $("rPage").value,
-    log: logEl.textContent,
-    results: batchResults,
-    urls: batchUrls.length ? batchUrls : linkInputs().map((i) => i.value.trim()).filter(Boolean),
+    // Only this link's slice of the log. It is accumulated per index as
+    // output arrives, so this is exact rather than a re-parse of the
+    // combined scrollback.
+    log: scoped ? linkLog.get(reportScope.index) || "" : logEl.textContent,
+    results: scoped ? batchResults.filter((b) => b.index === reportScope.index) : batchResults,
+    urls: scoped
+      ? [reportScope.url]
+      : batchUrls.length
+        ? batchUrls
+        : linkInputs().map((i) => i.value.trim()).filter(Boolean),
+    // Exact directories for a link; the batch case falls back to mtime.
+    snapshotPaths: scoped ? linkSnapshots.get(reportScope.index) || [] : [],
+    label: scoped ? `link ${reportScope.index + 1} - ${reportScope.url}` : "",
     startedAt: batchStartedAt,
   });
   btn.disabled = false;
