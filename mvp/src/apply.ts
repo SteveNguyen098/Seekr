@@ -950,9 +950,9 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
  *    (e.g. inside a collapsed accordion) - it gets attempted, and an honest
  *    fill failure is reported if it truly can't be reached.
  */
-type Reachability = "reachable" | "blocked" | "inconclusive-zero-size" | "inconclusive-offscreen";
+type Reachability = "reachable" | "blocked" | "not-rendered" | "inconclusive-zero-size" | "inconclusive-offscreen";
 
-async function reachability(ctx: FormContext, selector: string): Promise<Reachability> {
+export async function reachability(ctx: FormContext, selector: string): Promise<Reachability> {
   return ctx
     .$eval(selector, (el) => {
       const scrollX0 = window.scrollX;
@@ -962,6 +962,25 @@ async function reachability(ctx: FormContext, selector: string): Promise<Reachab
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
       const r = el.getBoundingClientRect();
       const verdict = (() => {
+        // Not rendered at all - an ancestor is display:none. Distinct from
+        // the 0x0 case below, and the distinction is the whole point: a 0x0
+        // control is still IN the layout (Greenhouse renders its resume
+        // <input type=file> at 1x1 under a styled dropzone, and Ashby-style
+        // custom controls clip real inputs to nothing), so those must stay
+        // fillable. An element inside display:none is in no layout at all -
+        // it belongs to UI the user cannot see and did not open.
+        //
+        // Measured on a Trillium Staffing signup page, whose collapsed nav
+        // sign-in modal contributed an email box, a "Remember me" checkbox
+        // and a password field to the discovered form. The run filled them,
+        // reporting each only as a flow note. Checked against a known-good
+        // Greenhouse form (12twenty) as the control: it has 18 fillable
+        // fields and NOT ONE sits inside display:none - both of its 1x1
+        // "Attach" file inputs are rendered - so failing closed here costs
+        // that form nothing.
+        for (let n = el.parentElement, depth = 0; n && depth < 12; n = n.parentElement, depth++) {
+          if (getComputedStyle(n).display === "none") return "not-rendered";
+        }
         if (r.width <= 0 || r.height <= 0) return "inconclusive-zero-size";
         const cx = r.left + r.width / 2;
         const cy = r.top + r.height / 2;
@@ -2193,6 +2212,20 @@ export async function fillCurrentPage(
         skipped.push({
           label: field.label || field.selector,
           reason: "not reachable by a real click (hidden or covered) - left empty",
+          required: false,
+        });
+        continue;
+      }
+      // Unlike the inconclusive verdicts below, this one is certain: the
+      // control sits inside a display:none subtree, so it is part of UI the
+      // user never opened - a collapsed sign-in modal, an alternate input
+      // method behind a tab. Filling it is always wrong, and unlike a 0x0
+      // control there is no legitimate "styled surface over a real input"
+      // reading to protect. Fails CLOSED, deliberately, where 0x0 fails open.
+      if (reach === "not-rendered") {
+        skipped.push({
+          label: field.label || field.selector,
+          reason: "inside hidden UI the user hasn't opened (a collapsed modal or tab) - left empty",
           required: false,
         });
         continue;

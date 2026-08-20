@@ -1,0 +1,89 @@
+<!doctype html>
+<!--
+BUG: fields belonging to a collapsed nav sign-in modal were filled as if
+they were part of the application form.
+
+Measured on a Trillium Staffing signup page. Its nav carries a sign-in modal
+that is display:none until clicked, and three of its controls - an email box,
+a "Remember me" checkbox, and a password field - were discovered as form
+fields and attempted. The run reported each only as a flow note
+("Filled a zero-size field with no visible label partner"), which is not the
+same as declining to fill it.
+
+The fix distinguishes NOT RENDERED from merely 0x0, and that distinction is
+the entire point:
+
+  0x0 but in the layout  -> still filled. Greenhouse renders its resume
+                            <input type=file> at 1x1 under a styled dropzone;
+                            Ashby clips real inputs to nothing behind custom
+                            controls. Failing closed here would silently drop
+                            the single most important field on the form.
+  inside display:none    -> never filled. It is UI the user has not opened.
+
+Control group when this was written: a known-good Greenhouse form (12twenty)
+has 18 fillable fields and not one inside display:none, so failing closed
+costs it nothing.
+
+This fixture holds all three shapes at once.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Application with a collapsed sign-in modal</title>
+    <style>
+      .modal { display: none; }
+      /* The near-universal styled-dropzone pattern: a real input clipped to
+         1x1 and covered by a pretty div. Must remain fillable. */
+      .dropzone-input { width: 1px; height: 1px; opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div class="modal">
+        <label for="signin-email">email address</label>
+        <input id="signin-email" name="signin_email" type="email" />
+        <label><input id="rememberme" name="rememberme" type="checkbox" /><span>Remember me</span></label>
+      </div>
+    </nav>
+
+    <main>
+      <h1>Autonomous Vehicle Operator</h1>
+      <p>
+        Operate and monitor autonomous test vehicles on public roads, take manual control when
+        conditions require it, and log detailed observations for the engineering team. Complete
+        pre-trip and post-trip inspections, follow defined test routes, and document any
+        disengagements accurately. Shifts run on a rotating schedule including some weekend cover.
+      </p>
+
+      <form>
+        <label for="app-email">Enter your email address</label>
+        <input id="app-email" name="email" type="text" />
+
+        <!-- 1x1 but rendered: must still receive the resume. This is what
+             Greenhouse actually ships - measured at exactly 1x1 on a real
+             form - so it does not exercise the literal 0x0 branch. -->
+        <label for="uploadresume">Upload your resume</label>
+        <input id="uploadresume" name="uploadresume" type="file" class="dropzone-input" />
+
+        <!-- Genuinely 0x0 AND rendered: a real input clipped to nothing
+             behind a custom control (the Ashby/Rippling shape). This is the
+             case the 0x0 fail-open exists to protect - it must stay
+             "inconclusive", never "not-rendered", or real fields start
+             silently vanishing. Without this control the guard above passes
+             whether or not the distinction survives, which is precisely
+             what mutation-check caught. -->
+        <label for="clipped">Clipped real input</label>
+        <input id="clipped" name="clipped" type="text" style="width: 0; height: 0; border: 0; padding: 0" />
+
+        <button type="submit">Continue</button>
+      </form>
+
+      <!-- Alternate input method behind a collapsed tab. Not opened by the
+           user, so not ours to fill. -->
+      <div class="modal">
+        <label for="pasteresume">Paste the content of your resume here</label>
+        <textarea id="pasteresume" name="pasteresume"></textarea>
+      </div>
+    </main>
+  </body>
+</html>

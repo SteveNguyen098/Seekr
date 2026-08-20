@@ -119,6 +119,21 @@ const MUTATIONS = [
     to: "const isGenericChrome = false;",
   },
   {
+    bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
+    fixture: "hidden-modal",
+    from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
+    to: 'if (false) return "not-rendered";',
+  },
+  {
+    // The other direction: treating every 0x0 control as hidden would drop
+    // the resume upload on every Greenhouse form, which renders it 1x1
+    // behind a styled dropzone.
+    bug: "treat any 0x0 control as not-rendered, killing dropzone file inputs",
+    fixture: "hidden-modal",
+    from: 'if (r.width <= 0 || r.height <= 0) return "inconclusive-zero-size";',
+    to: 'if (r.width <= 0 || r.height <= 0) return "not-rendered";',
+  },
+  {
     bug: "stop recognising an account wall, so a login page gets filled",
     fixture: "auth-wall-login",
     from: "if (!visible) return null;",

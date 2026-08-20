@@ -16,7 +16,7 @@
  *   npm test -- paycom          # run only matching fixtures
  */
 import { chromium, type Browser, type Page } from "playwright";
-import { findFormContext, discoverFields, detectAuthWall, type DiscoveredField } from "../src/apply.js";
+import { findFormContext, discoverFields, detectAuthWall, reachability, type DiscoveredField } from "../src/apply.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -207,6 +207,38 @@ const CASES: Case[] = [
       const optional = fields.filter((f) => f.nameAttr === "source[]");
       t.is("the optional group is also grouped", optional.length, 3);
       t.ok("optional group is not required", optional.every((f) => !f.required));
+    },
+  },
+  {
+    file: "hidden-modal-fields.html",
+    bug: "fields in a collapsed sign-in modal were filled as if they were part of the form",
+    async check(fields, t, ctx) {
+      const by = (re: RegExp) => fields.find((f) => re.test(f.label));
+
+      // Inside display:none - never ours to fill.
+      for (const [what, re] of [["modal email", /email address$/i], ["remember me", /remember me/i], ["paste-resume tab", /paste the content/i]] as const) {
+        const f = by(re);
+        t.ok(`${what} is discovered`, !!f);
+        t.is(`${what} is reported not-rendered`, f ? await reachability(ctx, f.selector) : "missing", "not-rendered");
+      }
+
+      // Rendered at 1x1 behind a styled dropzone - MUST stay fillable, or
+      // the resume upload silently vanishes.
+      const upload = fields.find((f) => f.type === "file");
+      t.ok("the dropzone resume input is discovered", !!upload);
+      t.ok("...and is NOT treated as hidden", (await reachability(ctx, upload!.selector)) !== "not-rendered");
+
+      // Genuinely 0x0 but rendered: the clipped-real-input shape. Must stay
+      // inconclusive (attempted), never "not-rendered" - this is the half of
+      // the distinction that protects real fields from silently vanishing.
+      const clipped = fields.find((f) => /clipped real input/i.test(f.label));
+      t.ok("the clipped 0x0 input is discovered", !!clipped);
+      t.is("...and stays inconclusive rather than hidden", clipped ? await reachability(ctx, clipped.selector) : "missing", "inconclusive-zero-size");
+
+      // The real visible field is unaffected.
+      const email = fields.find((f) => /enter your email/i.test(f.label));
+      t.ok("the real email field is discovered", !!email);
+      t.is("...and is reachable", email ? await reachability(ctx, email.selector) : "missing", "reachable");
     },
   },
   {
