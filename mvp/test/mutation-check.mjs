@@ -73,11 +73,31 @@ const MUTATIONS = [
     to: "function allContexts(page: Page): FormContext[] {\n  if (1) return [page];",
   },
   {
+    bug: "let the link-count rule outrank a page's own Apply affordance",
+    source: "scrape",
+    spec: "classify",
+    fixture: "posting-with-sidebar",
+    from: "if (askedForOnePosting && signals.hasApply && signals.textLength > 1200)",
+    to: "if (false && askedForOnePosting && signals.hasApply && signals.textLength > 1200)",
+  },
+  {
+    // The other half: without the URL-shape requirement, any board whose
+    // prose contains the word "apply" gets promoted to a posting. Not
+    // hypothetical - this is exactly what happened when the fixture below
+    // was padded with "Applying takes a few minutes".
+    bug: "drop the URL-shape requirement, letting prose containing 'apply' promote a board",
+    source: "scrape",
+    spec: "classify",
+    fixture: "board-with-signup-form",
+    from: "if (askedForOnePosting && signals.hasApply && signals.textLength > 1200)",
+    to: "if (signals.hasApply && signals.textLength > 1200)",
+  },
+  {
     bug: "stop telling a removed posting apart from an ordinary board",
     source: "scrape",
     spec: "classify",
     fixture: "dead",
-    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url);",
+    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url) && !signals.hasApply;",
     to: "const deadPosting = false;",
   },
   {
@@ -89,7 +109,7 @@ const MUTATIONS = [
     // deadPosting, so it stayed green under this mutation. Caught by this
     // very check.
     fixture: "engineering",
-    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url);",
+    from: "const deadPosting = askedForOnePosting && strip(landed) !== strip(url) && !signals.hasApply;",
     to: "const deadPosting = askedForOnePosting;",
   },
   {

@@ -1,0 +1,78 @@
+<!doctype html>
+<!--
+The other direction, and the reason the rule keys on the Apply affordance
+rather than on form presence.
+
+Trillium Staffing's own board carries a job-alert email signup, so hasForm is
+true there just as it is on their postings. Had the posting-vs-board rule
+keyed on "there is a form", this board would have been promoted to a single
+job posting - the same class of mistake in reverse, and a worse one, since
+the run would then try to apply on a listings page.
+
+Measured: Trillium board = 21 links, hasApply false, hasForm TRUE.
+So: a signup form, many listings, and no Apply affordance => still a board.
+
+It now guards a second thing, discovered by accident. The padding below
+contains the phrase "Applying takes a few minutes", and hasApply is a
+substring test over the page's whole text - so this board reports hasApply
+TRUE. It must still classify as a board, which is why the posting rule also
+requires the URL to name one posting. Leave that phrasing in place; it is the
+test, not filler.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Find A Job - Example Staffing</title>
+  </head>
+  <body>
+    <h1>Find A Job</h1>
+    <p>
+      Browse current openings across our branches. New positions are posted daily, and you can sign
+      up below to be notified when roles matching your interests become available in your area.
+    </p>
+    <!--
+      Deliberately padded past the 1200-character description threshold. At
+      341 characters this fixture was under it, so the rule being guarded
+      never fired and the case stayed green even when the rule was broken -
+      caught by mutation-check, and the second time that exact "passes for
+      the wrong reason" trap has appeared in this corpus. Real boards carry
+      far more text than 341 characters anyway, so this is also the more
+      faithful shape.
+    -->
+    <p>
+      Example Staffing has connected people with work since 1984, across light industrial, skilled
+      trades, transportation, professional, and administrative placements. We staff contract,
+      contract-to-hire, and direct-hire positions, and our recruiters work with hiring managers
+      directly rather than through an automated queue, so the person you speak with is the person
+      advocating for your application.
+    </p>
+    <p>
+      Applying takes a few minutes. Create a profile once and it carries across every branch, so you
+      do not re-enter your history for each role you are interested in. A recruiter reviews new
+      applications within two business days and will reach out by phone or email to confirm your
+      availability, shift preferences, and any certifications the role requires.
+    </p>
+    <p>
+      Benefits vary by assignment and are outlined during the interview. Many contract roles include
+      medical, dental, and vision coverage after a qualifying period, weekly pay, and access to
+      safety training at no cost. Talk to your recruiter about what applies to the specific position
+      you are considering, since these differ between branches and between client sites.
+    </p>
+
+    <form action="/jobs/signup/" id="signupform">
+      <label for="alert-email">Get job alerts by email</label>
+      <input id="alert-email" name="email" type="email" />
+      <input type="submit" value="Sign Up" />
+    </form>
+
+    <ul>
+      <li><a href="/jobs/job/100001-warehouse-associate.html">Warehouse Associate</a></li>
+      <li><a href="/jobs/job/100002-forklift-operator.html">Forklift Operator</a></li>
+      <li><a href="/jobs/job/100003-cdl-driver.html">CDL Driver</a></li>
+      <li><a href="/jobs/job/100004-machine-operator.html">Machine Operator</a></li>
+      <li><a href="/jobs/job/100005-quality-inspector.html">Quality Inspector</a></li>
+      <li><a href="/jobs/job/100006-assembly-technician.html">Assembly Technician</a></li>
+      <li><a href="/jobs/job/100007-shipping-clerk.html">Shipping Clerk</a></li>
+    </ul>
+  </body>
+</html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<!--
+BUG: a live posting was reported as a careers board, and the run stopped
+before it ever fetched the job description or tailored a resume.
+
+Confirmed live on Trillium Staffing's "Autonomous Vehicle Operator": a real,
+current posting that also renders a 13-link "other jobs" sidebar. The
+link-count rule fired first, so the run scraped it for listings, matched none
+against the target titles, and quit with "No postings matched the target
+titles. Try broader keywords." - which reads as a criteria problem and is
+nothing of the sort.
+
+This fixture is that shape: one posting, its own Apply affordance and full
+description, plus a sidebar of sibling jobs well past the board threshold.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Autonomous Vehicle Operator - Example Staffing</title>
+  </head>
+  <body>
+    <main>
+      <h1>Autonomous Vehicle Operator</h1>
+      <p>
+        Example Staffing is seeking an Autonomous Vehicle Operator in Atlanta, Georgia. In this role
+        you will operate and monitor autonomous test vehicles on public roads, take manual control
+        when conditions require it, and log detailed observations about vehicle behaviour for the
+        engineering team. Shifts run on a rotating schedule and include some weekend coverage.
+      </p>
+      <p>
+        Responsibilities include completing pre-trip and post-trip inspections, following defined
+        test routes, documenting disengagements and anomalies accurately, communicating road and
+        weather conditions to the operations desk, and keeping the vehicle interior and sensor
+        housings clean and unobstructed. You will work alongside a safety engineer on most shifts.
+      </p>
+      <p>
+        Requirements: a valid driver's licence with a clean record for the past three years, comfort
+        with in-vehicle software and tablets, strong written communication for incident logging, and
+        the ability to remain alert and focused during long periods of monitoring. Prior commercial
+        driving, fleet, or vehicle testing experience is helpful but not required - training is
+        provided. This is a full-time contract position with benefits available.
+      </p>
+      <a href="/jobs/signup/?jobid=788635">Apply</a>
+    </main>
+
+    <aside>
+      <h2>Other jobs you may like</h2>
+      <ul>
+        <li><a href="/jobs/job/100001-warehouse-associate.html">Warehouse Associate</a></li>
+        <li><a href="/jobs/job/100002-forklift-operator.html">Forklift Operator</a></li>
+        <li><a href="/jobs/job/100003-cdl-driver.html">CDL Driver</a></li>
+        <li><a href="/jobs/job/100004-machine-operator.html">Machine Operator</a></li>
+        <li><a href="/jobs/job/100005-quality-inspector.html">Quality Inspector</a></li>
+        <li><a href="/jobs/job/100006-assembly-technician.html">Assembly Technician</a></li>
+        <li><a href="/jobs/job/100007-shipping-clerk.html">Shipping Clerk</a></li>
+      </ul>
+    </aside>
+  </body>
+</html>

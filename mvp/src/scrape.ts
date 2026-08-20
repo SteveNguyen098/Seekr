@@ -189,16 +189,56 @@ export async function classifyUrl(
   const askedForOnePosting =
     /\/(jobs?|careers?|vacanc(y|ies)|positions?|openings?|postings?)\/[^/?#]{2,}/i.test(url) ||
     /[?&][a-z]*_?(jid|job_?id|requisition_?id)=/i.test(url);
-  const deadPosting = askedForOnePosting && strip(landed) !== strip(url);
+  // ...and the destination offers no Apply affordance of its own. A posting
+  // that redirects to ANOTHER posting (canonicalisation, an embed host) is
+  // still very much alive, and hasApply is what tells the two apart.
+  const deadPosting = askedForOnePosting && strip(landed) !== strip(url) && !signals.hasApply;
+
+  // An Apply affordance in the page's own text, plus a real description, is
+  // ONE posting - even when the page also links to many sibling jobs.
+  //
+  // Checked BEFORE the link-count rule below, which otherwise wins and calls
+  // it a board. Confirmed live on a Trillium Staffing posting
+  // ("Autonomous Vehicle Operator"): a genuine, live posting carrying a
+  // 13-link "other jobs" sidebar, reported as "a careers/listings page",
+  // scraped for listings, matched against target titles, and abandoned with
+  // "No postings matched the target titles" - a run that never fetched the
+  // job description, never tailored a resume, and never opened the form.
+  //
+  // Keyed on hasApply ALONE, deliberately, not the broader (hasApply ||
+  // hasForm) rule further down. Measured across four real boards: every one
+  // had hasApply=false, but Trillium's OWN board carries a job-alert signup
+  // form, so hasForm is true there too - keying on form presence would have
+  // turned that board into a posting. The measured separator is the Apply
+  // affordance:
+  //
+  //   page                         links  hasApply  hasForm  textLen
+  //   Trillium posting                13      true     true     4762
+  //   Trillium board                  21     false     true     2827
+  //   Procare board                   13     false    false    20630
+  //   12twenty board                   5     false    false      880
+  //   12twenty posting                 1      true     true     6706
+  //
+  // Also requires the URL to name ONE posting, and that is load-bearing
+  // rather than belt-and-braces. hasApply is a substring test over the
+  // page's whole text, so ordinary prose trips it: a board fixture padded
+  // with "Applying takes a few minutes" set hasApply true and was promoted
+  // to a posting on the spot. That was the exact risk noted here as
+  // hypothetical, demonstrated minutes later by the corpus. Any board whose
+  // copy happens to contain the word - "apply today", "how to apply" - would
+  // do the same. The URL shape is the independent signal that keeps a
+  // listings page a listings page no matter what its prose says.
+  if (askedForOnePosting && signals.hasApply && signals.textLength > 1200)
+    return { kind: "job", reason: "has an apply action and a full description" };
 
   // A board's defining feature is many distinct posting links.
   if (signals.postingLinks >= 5)
     return deadPosting
       ? { kind: "gone", reason: `it redirected to ${landed}` }
       : { kind: "board", reason: `found ${signals.postingLinks} job links` };
-  // A posting: an apply affordance (or a form) plus a substantial description.
-  if ((signals.hasApply || signals.hasForm) && signals.textLength > 1200)
-    return { kind: "job", reason: "has an apply action and a full description" };
+  // A posting whose Apply lives behind a form rather than the word "Apply".
+  if (signals.hasForm && signals.textLength > 1200)
+    return { kind: "job", reason: "has an application form and a full description" };
   if (signals.postingLinks >= 2)
     return deadPosting
       ? { kind: "gone", reason: `it redirected to ${landed}` }

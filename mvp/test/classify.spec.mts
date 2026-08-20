@@ -49,6 +49,18 @@ const CASES: Case[] = [
     expect: "board",
   },
   {
+    name: "live posting that also lists sibling jobs",
+    guards: "a real posting with an 'other jobs' sidebar being scraped as a board (Trillium)",
+    rel: "jobs/posting-with-sidebar.html",
+    expect: "job",
+  },
+  {
+    name: "board carrying a job-alert signup form",
+    guards: "the posting rule keying on the Apply affordance, not on form presence",
+    rel: "board-with-signup-form.html",
+    expect: "board",
+  },
+  {
     name: "board at a posting-shaped path, no redirect",
     guards: "the redirect half of the rule - a listing at /careers/<slug> is not a removed job",
     rel: "careers/engineering.html",
