@@ -3312,7 +3312,25 @@ export async function fillApplication(
     for (const s of res.skipped) skipped.push({ ...s, label: `[p${pageNum}] ${s.label}` });
     for (const n of res.notes) notes.push(`[p${pageNum}] ${n}`);
 
-    const shot = path.join(outDir, pageNum === 1 ? "application-preview.png" : `application-preview-page${pageNum}.png`);
+    // Named per application, NOT a fixed filename. Every link in a batch
+    // writes into the same outDir, so a shared name meant each run silently
+    // overwrote the previous one - and a per-link problem report then copied
+    // whichever screenshot happened to be last. Confirmed from a real
+    // 5-link batch: all five reports carried a byte-identical image (the
+    // final link's), so four of them documented the wrong application.
+    // Greenhouse titles are all "Job Application for <role> at <employer>",
+    // and that 20-character preamble used to eat the budget: at a 60-char
+    // cap, "...Business Operations at Zynga" truncated to "...at", losing
+    // the employer - the single most identifying part of the name. Strip
+    // the boilerplate first, then cap.
+    const shotSlug =
+      (jobTitle || "application")
+        .toLowerCase()
+        .replace(/^job application for /, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 70) || "application";
+    const shot = path.join(outDir, pageNum === 1 ? `${shotSlug}-preview.png` : `${shotSlug}-preview-page${pageNum}.png`);
     await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
     screenshots.push(shot);
 

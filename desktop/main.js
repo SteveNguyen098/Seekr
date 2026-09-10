@@ -493,13 +493,25 @@ ipcMain.handle('save-report', async (_e, payload) => {
       }
     }
 
-    // The preview screenshot, if this batch produced one.
-    const shot = path.join(MVP_DIR, 'out', 'Electron App Stuff', 'application-preview.png');
-    if (fs.existsSync(shot) && fs.statSync(shot).mtimeMs >= since) {
-      fs.copyFileSync(shot, path.join(root, 'application-preview.png'));
+    // Screenshots come from the results themselves, never from a fixed
+    // filename. Each run records the path it actually wrote, so a per-link
+    // report copies that link's own image - the same principle as the
+    // snapshot handling above.
+    //
+    // The old code copied out/<outDir>/application-preview.png by mtime.
+    // That name used to be shared by every link in a batch, so all five
+    // reports from one real run carried a byte-identical screenshot of the
+    // LAST application, silently mislabelling four of them.
+    let shots = 0;
+    for (const r of results) {
+      for (const sp of (r && r.report && r.report.screenshots) || []) {
+        if (!sp || !fs.existsSync(sp)) continue;
+        fs.copyFileSync(sp, path.join(root, path.basename(sp)));
+        shots++;
+      }
     }
 
-    return { ok: true, path: root, snapshots: copied };
+    return { ok: true, path: root, snapshots: copied, screenshots: shots };
   } catch (err) {
     return { ok: false, error: err.message };
   }
