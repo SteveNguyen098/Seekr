@@ -21,6 +21,7 @@ const ORIGINAL = Object.fromEntries(Object.entries(SOURCES).map(([k, p]) => [k, 
 const SPECS = {
   fields: "test/fixtures.spec.mts",
   classify: "test/classify.spec.mts",
+  labels: "test/labels.spec.mts",
 };
 
 const MUTATIONS = [
@@ -138,6 +139,25 @@ const MUTATIONS = [
     fixture: "trillium-signup",
     from: "&& !isFileChrome && !isGenericChrome && !isAnotherFieldsBlock) label = text;",
     to: "&& !isFileChrome && !isGenericChrome) label = text;",
+  },
+  {
+    // The bug that shipped: a substring test for "city" also matches
+    // "capacity", so a required bribery-disclosure question was answered
+    // with the candidate's home city on a live Robinhood posting.
+    bug: "match 'city' as a substring, so 'capacity' becomes a location field",
+    spec: "labels",
+    fixture: "",
+    from: "    /(^|[^a-z])city([^a-z]|$)/.test(labelLower) ||",
+    to: "    labelLower.includes('city') ||",
+  },
+  {
+    // The opposite direction: the boundary must not become so strict that
+    // the ordinary "Location (City)*" field stops being recognised.
+    bug: "require city to stand completely alone, dropping the real Location (City) field",
+    spec: "labels",
+    fixture: "",
+    from: "    /(^|[^a-z])city([^a-z]|$)/.test(labelLower) ||",
+    to: "    labelLower === 'city' ||",
   },
   {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",

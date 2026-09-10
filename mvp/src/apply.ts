@@ -183,6 +183,47 @@ const AI_POLICY_CANDIDATES = ["No"];
 const CONSENT_BROADER_SCOPE_RE =
   /marketing|third[- ]part(y|ies)|share\b.*(partner|affiliate|vendor)|indefinite(ly)?|unrelated purpose|advertis/i;
 const CONSENT_AGREE_CANDIDATES = ["Yes", "I agree", "I consent", "Accept", "Agree", "Acknowledge", "Confirm"];
+/**
+ * True when a field's label means "fill in the candidate's city".
+ *
+ * Extracted from the fill loop so it can be tested directly: the bug this
+ * guards against compiled cleanly and failed only at runtime, on a real
+ * application, against a required legal question.
+ *
+ * Boundary-matched, NOT a substring test. "capacity" ends in "city", so a
+ * plain .includes() classified a legal disclosure question as a location
+ * field. Confirmed on a live Robinhood posting whose REQUIRED
+ * government-official / bribery-risk question contains "acts in any
+ * official capacity on behalf of a government": it was answered "Decatur,
+ * Georgia", matched no dropdown option, and was left blank. Had that
+ * dropdown contained a matching option, a location would have been
+ * submitted as the answer to a bribery disclosure.
+ *
+ * "ethnicity" ends in "city" too. Not reachable from the fill loop -
+ * SENSITIVE_RE catches it earlier - but it is the clearest illustration of
+ * why this cannot be a substring test.
+ *
+ * Character classes rather than word-boundary escapes on purpose: an
+ * earlier fix here was mangled into a literal backspace character, which
+ * still compiled and silently matched nothing.
+ */
+export function isLocationLabel(labelLower: string): boolean {
+  // A work-authorization/sponsorship question can phrase itself around
+  // location ("...authorized to work in the location where this role is
+  // based?", confirmed live on Vanta) and would otherwise trip
+  // WORK_LOCATION_RE's "where...based" arm.
+  const looksLikeAuthQuestion = /authoriz|sponsor|eligible to work|legally.*\bwork\b|right to work/i.test(labelLower);
+  if (looksLikeAuthQuestion) return false;
+  return (
+    /(^|[^a-z])city([^a-z]|$)/.test(labelLower) ||
+    // Bare/prefixed "Location" (confirmed live on Vanta), anchored so it
+    // can't swallow "relocation" / "Are you open to relocation?", which has
+    // its own qa_context answer and must go to Claude.
+    /^(current |preferred |your )?location$/.test(labelLower) ||
+    WORK_LOCATION_RE.test(labelLower)
+  );
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -2596,17 +2637,7 @@ export async function fillCurrentPage(
     // question is never mistaken for a "fill in your city" field. (In
     // practice these render as Yes/No choice-buttons handled earlier in
     // this loop, but this keeps the text/combobox-shaped case safe too.)
-    const looksLikeAuthQuestion = /authoriz|sponsor|eligible to work|legally.*\bwork\b|right to work/i.test(labelLower);
-    const isLocationField =
-      !looksLikeAuthQuestion &&
-      (labelLower.includes("city") ||
-        // Bare/prefixed "Location" (confirmed live on Vanta: a field
-        // labeled exactly "Location"), anchored so it can't swallow
-        // "relocation" or "Are you open to relocation?" (which has its own
-        // qa_context answer and must go to Claude, not be filled with a
-        // city).
-        /^(current |preferred |your )?location$/.test(labelLower) ||
-        WORK_LOCATION_RE.test(labelLower));
+    const isLocationField = isLocationLabel(labelLower);
     if (isLocationField && profile.city) {
       // "Current Location" (confirmed live on Ashby: a single combined
       // city/state/country combobox, e.g. "Decatur, Georgia, United
