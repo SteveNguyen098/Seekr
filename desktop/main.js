@@ -68,7 +68,24 @@ let jobs = [];
 let activeIndex = -1;
 let batch = null;
 
-const PROFILE_DIR = path.resolve(MVP_DIR, ".browser-profile");
+// Browser profiles live OUTSIDE the project, deliberately.
+//
+// They used to sit in mvp/.browser-profile*, which is inside the user's
+// OneDrive tree. A Chromium profile is not a document: it is thousands of
+// small files that the browser rewrites constantly (slot 0 alone reached
+// 1,054). OneDrive treats that churn as user activity and prompted
+// "453 items" mid-session, and worse, it can take a sync lock on a file a
+// running browser is mid-write on - which risks a corrupted profile, not
+// just noise. .gitignore keeps these out of git but says nothing to
+// OneDrive.
+//
+// LOCALAPPDATA rather than APPDATA/userData: roaming profiles are synced
+// wholesale on managed Windows machines, which would reintroduce exactly
+// the problem being solved here.
+const PROFILE_ROOT = process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, "Seekr", "profiles")
+  : path.join(os.homedir(), ".seekr", "profiles");
+const PROFILE_DIR = path.join(PROFILE_ROOT, "browser-profile");
 
 // Each queued job needs its OWN browser profile, because finished windows
 // stay open while later links are still being filled. Chromium holds a

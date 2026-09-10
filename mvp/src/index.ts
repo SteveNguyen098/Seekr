@@ -3,6 +3,7 @@ import { chromium } from "playwright";
 import Anthropic from "@anthropic-ai/sdk";
 import readline from "node:readline/promises";
 import path from "node:path";
+import os from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { loadResume } from "./resume.js";
 import { listJobs, getJobDescription, classifyUrl } from "./scrape.js";
@@ -136,7 +137,14 @@ const headed = args["headed"] === "true";
 // be done by hand.
 // Disable with --no-profile to get the old throwaway-context behaviour.
 const useProfile = args["no-profile"] !== "true";
-const profileDir = path.resolve(args["profile"] || "./.browser-profile");
+// Default lives outside the project for the same reason the desktop shell's
+// does: a Chromium profile is thousands of constantly-rewritten files, and
+// the repo sits inside a synced OneDrive tree. An explicit --profile still
+// wins, so the desktop app's per-slot paths are unaffected.
+const defaultProfileRoot = process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, "Seekr", "profiles")
+  : path.join(os.homedir(), ".seekr", "profiles");
+const profileDir = path.resolve(args["profile"] || path.join(defaultProfileRoot, "browser-profile"));
 // Chromium under CDP automation (which is what Playwright always is) sets
 // navigator.webdriver = true by default - confirmed live via a direct check
 // of this same launch config. That's the single most common signal
