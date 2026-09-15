@@ -211,6 +211,34 @@ const MUTATIONS = [
     to: "",
   },
   {
+    // The bug that shipped: a resume reading "Georgia State University"
+    // was answered "Arizona State University" on a live posting.
+    bug: "stop checking a generated institution against the resume",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!/school|universit|college|institution|alma mater|employer/i.test(label)) return false;",
+    to: "  return false;",
+  },
+  {
+    // The over-reach direction: without the label scope this stops being a
+    // fabrication guard and starts filtering ordinary prose answers.
+    bug: "drop the institution-label scope, so any answer is checked against the resume",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!/school|universit|college|institution|alma mater|employer/i.test(label)) return false;",
+    to: "",
+  },
+  {
+    // The other over-reach: a value with nothing identifying in it
+    // ("University") is not evidence of fabrication and must not be
+    // rejected as if it were.
+    bug: "fail closed when a value has no distinguishing word left",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!distinguishing.length) return false;",
+    to: "  if (!distinguishing.length) return true;",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

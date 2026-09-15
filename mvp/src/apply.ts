@@ -1372,6 +1372,72 @@ export function genericDegreeOptions(label: string, value: string): RegExp[] {
   return [];
 }
 
+// Words that identify nothing on their own. "Arizona State University" and
+// "Georgia State University" differ only outside this set, which is the
+// whole point - the check has to key on the distinguishing word.
+const GENERIC_INSTITUTION_WORDS = new Set([
+  "university",
+  "universities",
+  "college",
+  "school",
+  "institute",
+  "institution",
+  "academy",
+  "state",
+  "the",
+  "and",
+  "inc",
+  "llc",
+  "ltd",
+  "corp",
+  "company",
+]);
+
+/**
+ * True when a generated answer names an institution the resume never
+ * mentions.
+ *
+ * THE BUG: a resume whose education section reads "Georgia State
+ * University" was answered "Arizona State University" on a live SpaceX
+ * posting. The model flagged it low-confidence, so the report did say to
+ * check it - but a real application was still filled with a false claim
+ * about someone's education, and the ground truth was sitting in the
+ * resume the model had been given.
+ *
+ * Same idea as the no-fabrication rule already enforced on the resume's
+ * skills lists (see resumeGenerator.ts): the prompt asks for truthfulness,
+ * and this checks it in code, because a prompt cannot be relied on for a
+ * claim this checkable.
+ *
+ * Deliberately narrow. It only looks at fields whose LABEL asks for an
+ * institution, and it only rejects - it never substitutes a value of its
+ * own, because guessing which line of a resume is the right school is its
+ * own way to be confidently wrong.
+ */
+export function unbackedInstitution(label: string, value: string, resumeText: string): boolean {
+  if (!/school|universit|college|institution|alma mater|employer/i.test(label)) return false;
+  const candidate = value.trim();
+  if (!candidate) return false;
+
+  const haystack = resumeText.toLowerCase();
+  // Verbatim is the common case and settles it outright.
+  if (haystack.includes(candidate.toLowerCase())) return false;
+
+  // Otherwise every DISTINGUISHING word has to appear somewhere in the
+  // resume. Token-wise rather than whole-string so ordinary rewording
+  // ("Georgia State Univ.") still passes, while a different institution
+  // cannot - its identifying word is missing by definition.
+  const distinguishing = candidate
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !GENERIC_INSTITUTION_WORDS.has(t));
+  // Nothing identifying left to check (e.g. a bare "University"): not
+  // evidence of anything, so let it through rather than fail closed on a
+  // value that says nothing either way.
+  if (!distinguishing.length) return false;
+  return !distinguishing.every((t) => haystack.includes(t));
+}
+
 /** Finds the first currently-rendered option matching any candidate, without clicking it. */
 async function findMatchingOption(ctx: FormContext, selector: string, candidates: (string | RegExp)[]) {
   const options = await getListboxOptions(ctx, selector);
@@ -2892,6 +2958,22 @@ export async function fillCurrentPage(
           reason: "requires performing a real external action (visiting a live URL/tool, a timed assessment, etc.) that can't be answered from the resume/context - please complete this manually",
           required,
         });
+        continue;
+      }
+
+      // Refuse an institution the resume never names. Placed before the
+      // type dispatch so it covers text inputs, selects and comboboxes
+      // alike, and left UNFILLED rather than corrected - an empty field is
+      // recoverable, a confidently wrong school is not.
+      if (unbackedInstitution(field.label, value, resume.text)) {
+        skipped.push({
+          label: field.label,
+          reason: `"${value}" does not appear anywhere in your resume, so it was not filled in - this field needs a real answer from you`,
+          required,
+        });
+        notes.push(
+          `"${field.label.slice(0, 40)}" was answered "${value}", which is nowhere in your resume. Left blank rather than put an unverifiable claim on the application.`
+        );
         continue;
       }
 

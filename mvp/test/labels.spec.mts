@@ -13,7 +13,7 @@
  *
  *   npm run test:labels
  */
-import { genericDegreeOptions, isLocationLabel, isStandardRecruitmentConsent } from "../src/apply.js";
+import { genericDegreeOptions, isLocationLabel, isStandardRecruitmentConsent, unbackedInstitution } from "../src/apply.js";
 
 interface Case {
   label: string;
@@ -125,6 +125,54 @@ const DEGREE: DegreeCase[] = [
   { label: "Degree*", value: "Some college, no degree", options: GREENHOUSE_DEGREES, want: null, why: "level can't be read - existing skip stands" },
 ];
 
+// Mirrors the education section of the real template from the failing run.
+// Inline rather than loading the user's actual .docx: the guard must be
+// testable without a personal file present, and the one line that matters
+// is reproduced faithfully here.
+const RESUME = `
+Steven Nguyen - Business Analyst
+EXPERIENCE
+  Some Company - built dashboards and reporting
+EDUCATION
+  Georgia State University    Graduation: December 2023
+  B.B.A., Computer/Management Information Systems
+  GPA: 3.54/4.0; Dean's List; Honors College; Cum Laude
+`;
+
+interface InstitutionCase {
+  label: string;
+  value: string;
+  want: boolean;
+  why: string;
+}
+
+const INSTITUTION: InstitutionCase[] = [
+  {
+    label: "School*",
+    value: "Arizona State University",
+    want: true,
+    why: "THE BUG: answered on a live SpaceX posting while the resume said Georgia State",
+  },
+  { label: "School*", value: "Georgia State University", want: false, why: "the truth, verbatim in the resume" },
+  { label: "School*", value: "Georgia State Univ.", want: false, why: "reworded, but every distinguishing word is still present" },
+  { label: "School*", value: "georgia state university", want: false, why: "case-insensitive" },
+  { label: "University", value: "Stanford University", want: true, why: "a school the resume never mentions" },
+  { label: "Most recent employer", value: "Initech", want: true, why: "employer fields get the same treatment" },
+
+  // Must not fire outside institution fields - this is what keeps it from
+  // becoming a general-purpose answer filter.
+  { label: "Why are you interested in this role?", value: "Arizona is a long way from here", want: false, why: "prose answer, not an institution field" },
+  { label: "Preferred First Name", value: "Arizona", want: false, why: "not an institution field" },
+
+  // Nothing identifying in the value - not evidence either way.
+  // Deliberately NOT "University": that word appears inside "Georgia State
+  // University", so it exits at the verbatim check and never reaches the
+  // branch this is meant to cover. It stayed green under its own mutation
+  // until the checker caught it.
+  { label: "School*", value: "Institute", want: false, why: "no distinguishing word left after the generic ones" },
+  { label: "School*", value: "", want: false, why: "empty is handled by the normal empty-answer path" },
+];
+
 let pass = 0;
 let fail = 0;
 const run = (name: string, cases: Case[], fn: (s: string) => boolean) => {
@@ -163,6 +211,15 @@ for (const c of DEGREE) {
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(c.value).padEnd(38)} -> ${String(got)}`);
   if (!ok) console.log(`        expected ${String(c.want)} - ${c.why}`);
+}
+
+console.log("\nunbackedInstitution");
+for (const c of INSTITUTION) {
+  const got = unbackedInstitution(c.label, c.value, RESUME);
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  rejected=${String(got).padEnd(5)} ${JSON.stringify(c.value)}`);
+  if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
 }
 
 console.log(`\n${"-".repeat(70)}`);
