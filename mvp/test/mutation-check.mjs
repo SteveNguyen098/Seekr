@@ -239,6 +239,24 @@ const MUTATIONS = [
     to: "  if (!distinguishing.length) return true;",
   },
   {
+    // The bug that shipped: a required Axon checkbox reported as just
+    // "Acknowledge", with the legend naming the firearms questionnaire
+    // never consulted because the legend lookup ran only for radios.
+    bug: "stop consulting a fieldset's legend for a bare-affirmation checkbox",
+    fixture: "axon-acknowledge",
+    from: '          const legend = el.closest("fieldset")?.querySelector(":scope > legend")?.textContent?.trim() || "";',
+    to: '          const legend = "";',
+  },
+  {
+    // The damaging direction: applied to EVERY checkbox, a group's shared
+    // legend overwrites each option's own label, so "Asian" becomes the
+    // race question and the self-identify handling loses what it keys on.
+    bug: "take the legend for every checkbox, overwriting a group's own option labels",
+    fixture: "axon-acknowledge",
+    from: 'if (type === "checkbox" && /^(i\\s+)?(acknowledge|acknowledged|agree|accept|consent|confirm|yes)[\\s.:*-]*$/i.test(label.trim())) {',
+    to: 'if (type === "checkbox") {',
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

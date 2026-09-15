@@ -897,6 +897,27 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
 
+        // A checkbox whose own <label> is a bare affirmation ("Acknowledge",
+        // "I agree") says nothing about WHAT is being agreed to. The
+        // question lives in the enclosing <fieldset>'s <legend> - the
+        // element HTML defines for exactly that purpose.
+        //
+        // THE BUG: Axon's required firearms checkbox was reported as just
+        // "Acknowledge", dropping the legend "Federal Firearms Licensee
+        // Employee Accessor Questionnaire" entirely, so the report gave no
+        // way to tell what had been left unticked.
+        //
+        // The legend lookup further down is deliberately not reused: it
+        // runs only for radios and feeds radio-group plumbing. This is the
+        // same standards-correct read, applied only where a checkbox's own
+        // label is known to be uninformative - narrow on purpose, because a
+        // checkbox GROUP's per-option labels ("Asian", "Hispanic") are
+        // meaningful and must not be replaced by their shared legend.
+        if (type === "checkbox" && /^(i\s+)?(acknowledge|acknowledged|agree|accept|consent|confirm|yes)[\s.:*-]*$/i.test(label.trim())) {
+          const legend = el.closest("fieldset")?.querySelector(":scope > legend")?.textContent?.trim() || "";
+          if (legend.length > 2 && legend.length < 300) label = legend;
+        }
+
         let skipAlways = false;
         let skipReason = "";
         // A credential field, never filled under any circumstances. The

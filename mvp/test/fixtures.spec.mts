@@ -69,6 +69,35 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "axon-acknowledge-legend.html",
+    bug: "a required checkbox was reported as just 'Acknowledge', losing what it acknowledged",
+    check(fields, t) {
+      // idOrName is "<id> <name> <data-testid>" joined, so match the token.
+      const byId = (id: string) => fields.find((f) => f.idOrName.split(/\s+/).includes(id));
+      const ffl = byId("ffl_ack");
+      t.ok("the firearms checkbox was discovered", !!ffl);
+      t.ok("its label now carries the legend's question", /federal firearms/i.test(ffl?.label ?? ""));
+      t.ok("the bare affirmation no longer stands alone as the label", ffl?.label !== "Acknowledge");
+      // required comes from the input's own attribute, which is why this
+      // field was correctly reported as REQUIRED even while its label was
+      // useless. The label swap must not disturb that.
+      t.is("still marked required after the label swap", ffl?.required, true);
+
+      // The direction that would do real damage: a checkbox GROUP's own
+      // option labels are the information, and must survive untouched.
+      const asian = byId("eth_asian");
+      const selfId = byId("eth_decline");
+      t.is("a group option keeps its own label", asian?.label, "Asian");
+      t.is("the self-identify option keeps its own label", selfId?.label, "I prefer to self-identify");
+      t.ok("no group option was overwritten by the shared legend", !/race\/ethnicity/i.test(asian?.label ?? ""));
+
+      // No fieldset to consult: leave the label exactly as found rather
+      // than reaching elsewhere on the page for something better.
+      const lonely = byId("lonely_ack");
+      t.is("an affirmation with no fieldset keeps its own label", lonely?.label, "Acknowledge");
+    },
+  },
+  {
     file: "kforce-consent-panel.html",
     bug: "the cookie consent centre was mistaken for the application form",
     check(fields, t) {

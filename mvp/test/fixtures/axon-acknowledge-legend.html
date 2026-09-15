@@ -1,0 +1,76 @@
+<!doctype html>
+<!--
+BUG: a required checkbox was reported as just "Acknowledge".
+
+Confirmed live on two Axon postings (Business Analyst II, Implementation
+Analyst I). The checkbox sits in a <fieldset> whose <legend> carries the
+actual question - "Federal Firearms Licensee Employee Accessor
+Questionnaire" - while the checkbox's own <label> is the bare word
+"Acknowledge".
+
+The legend lookup already existed, but ran only for type === "radio", so a
+checkbox never consulted it. The field came back labelled "Acknowledge",
+which says nothing about what was being agreed to: the report told the
+candidate a required box was unticked without telling them which one.
+
+The second fieldset below is the case this must NOT break. A checkbox
+GROUP's per-option labels are meaningful in their own right, and replacing
+them with the group's shared legend would destroy exactly the information
+the self-identify handling depends on. "Asian" must stay "Asian".
+
+The third is the other edge: a bare affirmation checkbox with no fieldset
+at all still has nothing better to fall back on, and must keep its own
+label rather than picking up something from elsewhere on the page.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Axon - acknowledge checkbox with a real legend</title>
+  </head>
+  <body>
+    <fieldset class="checkbox" id="question_31490855003[]" aria-required="true">
+      <legend class="label checkbox__description">
+        Federal Firearms Licensee Employee Accessor Questionnaire <span class="required">*</span>
+      </legend>
+      <div>
+        <!-- `required` is on the input itself on the real page, which is
+             why this field was correctly reported as REQUIRED even while
+             its label was useless. Kept here so the fixture matches. -->
+        <input type="checkbox" required id="ffl_ack" name="question_31490855003[]" value="166273631003" />
+        <label for="ffl_ack">Acknowledge</label>
+      </div>
+    </fieldset>
+    <div class="body body__secondary">
+      <div class="question-description">
+        <p>
+          The following questions apply only to an employee's ability to access firearms in accordance with Reference
+          5.1, 18 U.SC. 922(d), (g) and (n). Answering dishonestly to any of the below questions may result in
+          disciplinary action up to and including termination.
+        </p>
+      </div>
+    </div>
+
+    <!-- Must be left alone: each option's own label is the information. -->
+    <fieldset>
+      <legend>Please select the race/ethnicity with which you most closely identify</legend>
+      <div>
+        <input type="checkbox" id="eth_asian" name="ethnicity[]" value="asian" />
+        <label for="eth_asian">Asian</label>
+      </div>
+      <div>
+        <input type="checkbox" id="eth_hispanic" name="ethnicity[]" value="hispanic" />
+        <label for="eth_hispanic">Hispanic or Latino</label>
+      </div>
+      <div>
+        <input type="checkbox" id="eth_decline" name="ethnicity[]" value="decline" />
+        <label for="eth_decline">I prefer to self-identify</label>
+      </div>
+    </fieldset>
+
+    <!-- No fieldset: nothing better available, keep the label as-is. -->
+    <div>
+      <input type="checkbox" id="lonely_ack" name="lonely_ack" />
+      <label for="lonely_ack">Acknowledge</label>
+    </div>
+  </body>
+</html>
