@@ -224,6 +224,23 @@ export function isLocationLabel(labelLower: string): boolean {
   );
 }
 
+/**
+ * True when a label asks for the NAME of the institution attended.
+ *
+ * Kept apart from the credential questions around it: "School" wants
+ * "Georgia State University", while "Degree" and "Highest level of
+ * education" want a level and must keep going to their own handling.
+ *
+ * Character classes rather than word boundaries, per the note on
+ * isLocationLabel above.
+ */
+export function isSchoolLabel(labelLower: string): boolean {
+  // Credential/qualifier questions first - several of them mention the
+  // institution words in passing ("school year", "level of education").
+  if (/degree|level of (education|study)|major|field of study|gpa|graduation|years? attended|did you graduate/i.test(labelLower)) return false;
+  return /(^|[^a-z])(school|university|college|institution)([^a-z]|$)/i.test(labelLower);
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -2833,6 +2850,17 @@ export async function fillCurrentPage(
       } else {
         await setField(profile.city);
       }
+      continue;
+    }
+    // The school comes from the profile, never from the model. A live
+    // SpaceX run answered "Arizona State University" for a resume that
+    // says Georgia State - flagged low-confidence, but still a false claim
+    // about someone's education on a real application. A school is a fixed
+    // fact, so it is answered the same deterministic way as the city.
+    // setField() handles the autocomplete case: School is a combobox on
+    // Greenhouse, and this types the name and picks the real option.
+    if (isSchoolLabel(labelLower) && profile.school) {
+      await setField(profile.school);
       continue;
     }
     if ((labelLower === "state" || labelLower.includes("state/province") || labelLower.includes("state or province")) && profile.state) {

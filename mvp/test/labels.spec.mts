@@ -13,7 +13,7 @@
  *
  *   npm run test:labels
  */
-import { genericDegreeOptions, isLocationLabel, isStandardRecruitmentConsent, unbackedInstitution } from "../src/apply.js";
+import { genericDegreeOptions, isLocationLabel, isSchoolLabel, isStandardRecruitmentConsent, unbackedInstitution } from "../src/apply.js";
 
 interface Case {
   label: string;
@@ -39,6 +39,31 @@ const LOCATION: Case[] = [
   { label: "Are you legally authorized to work in the location where this role is based?", want: false, why: "auth question phrased around location (Vanta)" },
   { label: "Are you open to relocation?", want: false, why: "'relocation' must not be swallowed - it has its own qa_context answer" },
   { label: "Do you require sponsorship to work in this country?", want: false, why: "sponsorship, not location" },
+];
+
+// The school NAME field, which is answered from the profile, vs the
+// credential questions sitting right beside it in the same education
+// section, which must keep going to their own handling.
+const SCHOOL: Case[] = [
+  { label: "School*", want: true, why: "the Greenhouse education field that was answered with the wrong university" },
+  { label: "School", want: true, why: "bare label" },
+  { label: "University", want: true, why: "alternate wording" },
+  { label: "College/University", want: true, why: "combined wording" },
+  { label: "What school did you attend?", want: true, why: "question phrasing" },
+
+  { label: "Degree*", want: false, why: "wants a level, not an institution - has its own fallback handling" },
+  { label: "Highest level of education", want: false, why: "a level question that mentions education" },
+  { label: "Field of study", want: false, why: "the subject, not the school" },
+  { label: "Major", want: false, why: "the subject, not the school" },
+  { label: "Graduation date", want: false, why: "a date field in the same section" },
+  { label: "Did you graduate?", want: false, why: "yes/no, not an institution name" },
+
+  // The cases above all come back false on the institution words alone, so
+  // none of them exercises the credential exclusion. These do: each names
+  // an institution AND asks something that is not the institution's name.
+  { label: "What degree did you earn at this school?", want: false, why: "names a school but asks for the credential" },
+  { label: "Did you graduate from this university?", want: false, why: "names a university but asks yes/no" },
+  { label: "Highest level of education completed (school)", want: false, why: "names a school but asks for a level" },
 ];
 
 // Consent labels that SHOULD be auto-acknowledged vs left for the human.
@@ -188,6 +213,7 @@ const run = (name: string, cases: Case[], fn: (s: string) => boolean) => {
 };
 
 run("isLocationLabel", LOCATION, isLocationLabel);
+run("isSchoolLabel", SCHOOL, isSchoolLabel);
 // isStandardRecruitmentConsent is called with the ORIGINAL-case label in
 // apply.ts, so it is exercised that way here too.
 run("isStandardRecruitmentConsent", CONSENT, (s) => isStandardRecruitmentConsent(s));

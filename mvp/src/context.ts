@@ -10,6 +10,15 @@ export interface UserProfile {
   country?: string;
   phoneCountryCode?: string;
   phoneNumber?: string;
+  /**
+   * The institution name for an education section's "School" field.
+   *
+   * Here rather than left to the model: a live SpaceX run answered
+   * "Arizona State University" while the resume said Georgia State. A
+   * school is a fixed fact about a person, so it belongs with the other
+   * fixed facts and should never be generated at all.
+   */
+  school?: string;
 }
 
 export interface PersonalContext {
@@ -31,6 +40,8 @@ const PROFILE_KEYS: Record<string, keyof UserProfile> = {
   country: "country",
   "phone country code": "phoneCountryCode",
   "phone number": "phoneNumber",
+  school: "school",
+  university: "school",
 };
 
 function parseProfile(text: string): UserProfile {

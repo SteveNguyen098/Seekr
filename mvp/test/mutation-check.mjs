@@ -257,6 +257,16 @@ const MUTATIONS = [
     to: 'if (type === "checkbox") {',
   },
   {
+    // Without the credential exclusion, "What degree did you earn at this
+    // school?" is treated as the school-name field and answered with the
+    // university, burying the real question.
+    bug: "drop the credential exclusion, so a degree question asks for the school name",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/degree|level of (education|study)|major|field of study|gpa|graduation|years? attended|did you graduate/i.test(labelLower)) return false;",
+    to: "",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
