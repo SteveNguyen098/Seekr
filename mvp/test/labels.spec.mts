@@ -13,7 +13,14 @@
  *
  *   npm run test:labels
  */
-import { genericDegreeOptions, isLocationLabel, isSchoolLabel, isStandardRecruitmentConsent, unbackedInstitution } from "../src/apply.js";
+import {
+  genericDegreeOptions,
+  isLocationLabel,
+  isSchoolLabel,
+  isStandardRecruitmentConsent,
+  isTickableAcknowledgement,
+  unbackedInstitution,
+} from "../src/apply.js";
 
 interface Case {
   label: string;
@@ -64,6 +71,64 @@ const SCHOOL: Case[] = [
   { label: "What degree did you earn at this school?", want: false, why: "names a school but asks for the credential" },
   { label: "Did you graduate from this university?", want: false, why: "names a university but asks yes/no" },
   { label: "Highest level of education completed (school)", want: false, why: "names a school but asks for a level" },
+];
+
+// Which required acknowledgement checkboxes may be ticked automatically.
+// Enabled deliberately, so every refusal below is load-bearing.
+interface AckCase {
+  field: { type: string; required: boolean; label: string; ownLabelWasAffirmation: boolean };
+  want: boolean;
+  why: string;
+}
+
+const ACK: AckCase[] = [
+  {
+    field: { type: "checkbox", required: true, label: "Federal Firearms Licensee Employee Accessor Questionnaire *", ownLabelWasAffirmation: true },
+    want: true,
+    why: "the Axon box - a required acknowledgement of a questionnaire shown on the same page",
+  },
+  {
+    field: { type: "checkbox", required: true, label: "Prohibited Possessor Questionnaire *", ownLabelWasAffirmation: true },
+    want: true,
+    why: "Axon's other acknowledgement, same shape",
+  },
+
+  // Every one of these is a refusal that has to keep working.
+  {
+    field: { type: "checkbox", required: true, label: "I agree to receive marketing emails and share my data with third parties", ownLabelWasAffirmation: true },
+    want: false,
+    why: "broader scope - marketing and third-party sharing are never ticked automatically",
+  },
+  {
+    field: { type: "checkbox", required: true, label: "Consent to retain my data indefinitely", ownLabelWasAffirmation: true },
+    want: false,
+    why: "indefinite retention is broader scope",
+  },
+  {
+    field: { type: "checkbox", required: true, label: "Voluntary self-identification of disability", ownLabelWasAffirmation: true },
+    want: false,
+    why: "protected category - never ticked automatically",
+  },
+  {
+    field: { type: "checkbox", required: true, label: "Gender", ownLabelWasAffirmation: true },
+    want: false,
+    why: "protected category",
+  },
+  {
+    field: { type: "checkbox", required: false, label: "Federal Firearms Licensee Employee Accessor Questionnaire", ownLabelWasAffirmation: true },
+    want: false,
+    why: "optional - blocks nothing, so ticking it volunteers agreement nobody asked for",
+  },
+  {
+    field: { type: "checkbox", required: true, label: "I consent to the processing of my personal data for recruitment purposes", ownLabelWasAffirmation: false },
+    want: false,
+    why: "prose consent, not the bare-affirmation shape - goes to the existing consent handling instead",
+  },
+  {
+    field: { type: "radio", required: true, label: "Federal Firearms Licensee Employee Accessor Questionnaire *", ownLabelWasAffirmation: true },
+    want: false,
+    why: "checkboxes only",
+  },
 ];
 
 // Consent labels that SHOULD be auto-acknowledged vs left for the human.
@@ -237,6 +302,15 @@ for (const c of DEGREE) {
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(c.value).padEnd(38)} -> ${String(got)}`);
   if (!ok) console.log(`        expected ${String(c.want)} - ${c.why}`);
+}
+
+console.log("\nisTickableAcknowledgement");
+for (const c of ACK) {
+  const got = isTickableAcknowledgement(c.field as never);
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  tick=${String(got).padEnd(5)} ${JSON.stringify(c.field.label.slice(0, 58))}`);
+  if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
 }
 
 console.log("\nunbackedInstitution");

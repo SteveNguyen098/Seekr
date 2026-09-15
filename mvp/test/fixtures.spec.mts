@@ -82,6 +82,9 @@ const CASES: Case[] = [
       // field was correctly reported as REQUIRED even while its label was
       // useless. The label swap must not disturb that.
       t.is("still marked required after the label swap", ffl?.required, true);
+      // Feeds isTickableAcknowledgement: this is the flag that says the box
+      // itself read "Acknowledge" and the real text came from the legend.
+      t.is("flagged as a bare-affirmation acknowledgement", ffl?.ownLabelWasAffirmation, true);
 
       // The direction that would do real damage: a checkbox GROUP's own
       // option labels are the information, and must survive untouched.
@@ -90,6 +93,10 @@ const CASES: Case[] = [
       t.is("a group option keeps its own label", asian?.label, "Asian");
       t.is("the self-identify option keeps its own label", selfId?.label, "I prefer to self-identify");
       t.ok("no group option was overwritten by the shared legend", !/race\/ethnicity/i.test(asian?.label ?? ""));
+      // Must stay false, or the auto-tick would reach a protected-category
+      // group - SENSITIVE_RE is the backstop, but this is the front door.
+      t.is("a group option is not flagged as an affirmation", asian?.ownLabelWasAffirmation, false);
+      t.is("the self-identify option is not flagged either", selfId?.ownLabelWasAffirmation, false);
 
       // No fieldset to consult: leave the label exactly as found rather
       // than reaching elsewhere on the page for something better.

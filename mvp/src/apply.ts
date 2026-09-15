@@ -87,6 +87,18 @@ export interface DiscoveredField {
    */
   hasVisibleLabelPartner: boolean;
   /**
+   * The control's OWN label was a bare affirmation ("Acknowledge", "I
+   * agree"), and `label` therefore came from the enclosing fieldset's
+   * <legend> instead.
+   *
+   * This is the shape of an acknowledgement - a single box confirming a
+   * document was read - as opposed to a consent that grants someone a
+   * right. The fill loop uses it to tell those apart; nothing else should
+   * read it as "this is safe to tick", because the scope of what is being
+   * acknowledged still has to be checked separately.
+   */
+  ownLabelWasAffirmation: boolean;
+  /**
    * The raw `name` attribute, for ANY control type. Distinct from
    * `groupName`, which is deliberately radio-only. A checkbox group shares
    * one `name` the same way a radio group does - confirmed live on a
@@ -239,6 +251,43 @@ export function isSchoolLabel(labelLower: string): boolean {
   // institution words in passing ("school year", "level of education").
   if (/degree|level of (education|study)|major|field of study|gpa|graduation|years? attended|did you graduate/i.test(labelLower)) return false;
   return /(^|[^a-z])(school|university|college|institution)([^a-z]|$)/i.test(labelLower);
+}
+
+/**
+ * True when a required acknowledgement checkbox may be ticked on the
+ * candidate's behalf.
+ *
+ * This is the Axon shape: one required box whose own label is just
+ * "Acknowledge", confirming a questionnaire shown on the same page has
+ * been read. Enabled on the candidate's standing instruction - it is the
+ * last thing between a filled application and a submittable one, and only
+ * they can meaningfully give it.
+ *
+ * A pure function, and exported, because it is the one place in this file
+ * that agrees to something legal on someone's behalf. That decision should
+ * be readable and testable on its own, not spelled out inline in a 400-line
+ * fill loop where the conditions cannot be exercised.
+ *
+ * It is NOT a general "consent is fine" rule. Every guard below is the
+ * difference between acknowledging a document and granting a right.
+ */
+export function isTickableAcknowledgement(
+  field: Pick<DiscoveredField, "type" | "required" | "label" | "ownLabelWasAffirmation">
+): boolean {
+  if (field.type !== "checkbox") return false;
+  // The box itself reads "Acknowledge" and the real text came from the
+  // fieldset's legend. A consent written out in full prose - which is what
+  // a rights-granting one looks like - never has this shape.
+  if (!field.ownLabelWasAffirmation) return false;
+  // Optional acknowledgements block nothing, and ticking one would be
+  // volunteering agreement nobody asked for.
+  if (!field.required) return false;
+  // Marketing, third-party sharing and indefinite retention are refused
+  // here exactly as they are everywhere else in this file.
+  if (CONSENT_BROADER_SCOPE_RE.test(field.label)) return false;
+  // Nothing protected is ever ticked automatically.
+  if (SENSITIVE_RE.test(field.label.toLowerCase())) return false;
+  return true;
 }
 
 export function isStandardRecruitmentConsent(label: string): boolean {
@@ -930,9 +979,13 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // label is known to be uninformative - narrow on purpose, because a
         // checkbox GROUP's per-option labels ("Asian", "Hispanic") are
         // meaningful and must not be replaced by their shared legend.
+        let ownLabelWasAffirmation = false;
         if (type === "checkbox" && /^(i\s+)?(acknowledge|acknowledged|agree|accept|consent|confirm|yes)[\s.:*-]*$/i.test(label.trim())) {
           const legend = el.closest("fieldset")?.querySelector(":scope > legend")?.textContent?.trim() || "";
-          if (legend.length > 2 && legend.length < 300) label = legend;
+          if (legend.length > 2 && legend.length < 300) {
+            label = legend;
+            ownLabelWasAffirmation = true;
+          }
         }
 
         let skipAlways = false;
@@ -1077,7 +1130,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
 
         const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, nameAttr: nameAttr || "" };
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, nameAttr: nameAttr || "" };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -2697,6 +2750,40 @@ export async function fillCurrentPage(
       // group's <fieldset>), and reliably identifying just the "decline"
       // option among several sibling radios isn't covered; safer to leave
       // for manual review than guess at a protected-category answer.
+      // An ACKNOWLEDGEMENT, ticked on the candidate's standing
+      // instruction. This is the Axon shape: a single required box whose
+      // own label is just "Acknowledge", confirming a questionnaire shown
+      // on the same page has been read. It is the last thing standing
+      // between a filled application and a submittable one, and it can
+      // only ever be ticked by the person anyway.
+      //
+      // Distinguished from a consent that grants someone a right, which
+      // still gets left alone:
+      //   - ownLabelWasAffirmation: the box itself says "Acknowledge", and
+      //     the real text came from the fieldset's legend. A consent
+      //     written out in full prose does not have this shape.
+      //   - the broader-scope exclusion still runs, so marketing,
+      //     third-party sharing and indefinite retention are refused here
+      //     exactly as they are everywhere else.
+      //   - SENSITIVE_RE still runs, so nothing protected is touched.
+      //   - required only: an optional acknowledgement blocks nothing, and
+      //     ticking it would be volunteering agreement nobody asked for.
+      //
+      // Always noted in the report. Ticking a legal attestation on
+      // someone's behalf is not something that should be discoverable only
+      // by diffing the form.
+      if (isTickableAcknowledgement(field)) {
+        const ok = await checkField(formCtx, field.selector);
+        if (ok) {
+          filled.push({ label: field.label, value: "Acknowledged" });
+          notes.push(
+            `Ticked the acknowledgement "${field.label.slice(0, 70)}". Read it before you submit - this one is an attestation, and it was ticked on your standing instruction rather than because anything verified its contents.`
+          );
+        } else {
+          skipped.push({ label: field.label || field.selector, reason: "acknowledgement checkbox - could not tick it, please do it manually", required: field.required });
+        }
+        continue;
+      }
       skipped.push({ label: field.label || field.selector, reason: "checkbox/consent field left for user to decide", required: field.required });
       continue;
     }

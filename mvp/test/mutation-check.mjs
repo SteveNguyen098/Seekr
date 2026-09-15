@@ -266,6 +266,44 @@ const MUTATIONS = [
     from: "  if (/degree|level of (education|study)|major|field of study|gpa|graduation|years? attended|did you graduate/i.test(labelLower)) return false;",
     to: "",
   },
+  // isTickableAcknowledgement agrees to something legal on the candidate's
+  // behalf, so every guard in it gets its own mutation. Each of these is a
+  // refusal that must keep working.
+  {
+    bug: "auto-tick an acknowledgement whose scope covers marketing or third-party sharing",
+    spec: "labels",
+    fixture: "",
+    from: "  if (CONSENT_BROADER_SCOPE_RE.test(field.label)) return false;\n  // Nothing protected is ever ticked automatically.",
+    to: "  // Nothing protected is ever ticked automatically.",
+  },
+  {
+    bug: "auto-tick a protected-category checkbox",
+    spec: "labels",
+    fixture: "",
+    from: "  if (SENSITIVE_RE.test(field.label.toLowerCase())) return false;\n  return true;",
+    to: "  return true;",
+  },
+  {
+    bug: "auto-tick an OPTIONAL acknowledgement, volunteering agreement nobody asked for",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!field.required) return false;",
+    to: "",
+  },
+  {
+    bug: "auto-tick a prose consent, not just the bare-affirmation shape",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!field.ownLabelWasAffirmation) return false;",
+    to: "",
+  },
+  {
+    bug: "auto-tick a non-checkbox control",
+    spec: "labels",
+    fixture: "",
+    from: '  if (field.type !== "checkbox") return false;',
+    to: "",
+  },
   {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
