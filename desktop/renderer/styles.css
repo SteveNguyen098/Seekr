@@ -91,6 +91,24 @@ button:disabled { opacity: .45; cursor: default; }
 .addLink { margin-top: 2px; }
 .job .title .pill { margin-right: 7px; vertical-align: middle; }
 
+/* "Heads up - this one needs you": a step that is finished by a person or
+   not at all. Warm border rather than red - it is not an error, it is the
+   tool correctly declining to answer for someone. */
+.headsUp {
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.headsUp b { color: var(--warn); }
+.headsUp ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.headsUp li { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.headsUp li:last-child { border-bottom: none; }
+.headsUp li span { color: var(--dim); }
+
 .notes { margin-top: 14px; }
 .notes div { border-left: 3px solid var(--warn); padding: 7px 10px; background: var(--panel2); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 13px; }
 .shots { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }

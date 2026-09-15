@@ -275,12 +275,22 @@ function renderReport(r, { index, status, url }) {
   const card = document.createElement("section");
   card.className = "results";
 
+  // Some steps Seekr deliberately will not take on someone's behalf: a
+  // legal attestation (Axon's firearms questionnaire), an account wall, a
+  // question it could not ground in the resume. Those are finished by a
+  // person or not at all, so the card says so up front instead of leaving
+  // it to be inferred from a long Skipped column - which is how a required
+  // unticked box went unnoticed on a real batch.
+  const needsYou = (r?.skipped || []).filter((s) => s.required);
+  const needsAttention = !r || needsYou.length > 0;
+
   const head = document.createElement("div");
   head.className = "job";
   const badge =
-    status === "review"
+    (status === "review"
       ? '<span class="tag ok">filled</span>'
-      : '<span class="tag req">no form</span>';
+      : '<span class="tag req">no form</span>') +
+    (needsYou.length ? '<span class="tag req">needs you</span>' : "");
   head.innerHTML =
     `<div class="title"><span class="pill">${index + 1} of ${queueTotal}</span> ${esc(r?.job?.title || url || "(untitled)")}${badge}</div>` +
     (r
@@ -289,6 +299,24 @@ function renderReport(r, { index, status, url }) {
         (r.job?.reasoning ? `<div class="meta">${esc(r.job.reasoning)}</div>` : "")
       : `<div class="meta">This link produced no application form — see the log above for why.</div>`);
   card.appendChild(head);
+
+  if (needsAttention) {
+    const hu = document.createElement("div");
+    hu.className = "headsUp";
+    const what = !r
+      ? "No application form was produced for this link — see the log above for why."
+      : `${needsYou.length} required field${needsYou.length === 1 ? "" : "s"} could not be filled automatically, so this application is not ready to submit yet.`;
+    hu.innerHTML = `<b>Heads up — this one needs you.</b> ${esc(what)}`;
+    if (needsYou.length) {
+      const ul = document.createElement("ul");
+      // Capped: the full list is already in the Skipped column below, and a
+      // banner that runs off the screen stops reading as a heads-up.
+      for (const s of needsYou.slice(0, 5)) ul.appendChild(li(`<b>${esc(s.label)}</b><br><span>${esc(s.reason)}</span>`));
+      if (needsYou.length > 5) ul.appendChild(li(`<span>…and ${needsYou.length - 5} more, listed under Skipped below.</span>`));
+      hu.appendChild(ul);
+    }
+    card.appendChild(hu);
+  }
 
   if (!r) {
     $("results").appendChild(card);
