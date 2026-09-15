@@ -1,7 +1,10 @@
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
 
-const MAX_LINKS = 5;
+// The cap belongs to main.js, which is what actually truncates the batch, and
+// it arrives with the settings below. This value only covers the moment before
+// that resolves - keep it in step so a slow load never shows the wrong cap.
+let MAX_LINKS = 10;
 let running = false;
 
 function setRunning(on) {
@@ -82,7 +85,14 @@ function showResume(p) {
 
 // The resume template is remembered between launches, so the link is the
 // only thing to fill in per run.
-window.seekr.getSettings().then((s) => showResume(s.resume));
+window.seekr.getSettings().then((s) => {
+  showResume(s.resume);
+  if (Number.isInteger(s.maxQueue) && s.maxQueue > 0) {
+    MAX_LINKS = s.maxQueue;
+    $("maxLinks").textContent = String(MAX_LINKS);
+    renumberLinks();
+  }
+});
 
 $("pick").addEventListener("click", async () => {
   const p = await window.seekr.pickResume();

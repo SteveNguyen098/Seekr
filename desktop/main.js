@@ -63,7 +63,7 @@ let win = null;
 // holds one record per link for the whole batch; `activeIndex` is the link
 // currently being filled. Earlier jobs are not finished - they're parked
 // (see advance()), each still holding its browser window open for review.
-const MAX_QUEUE = 5;
+const MAX_QUEUE = 10;
 let jobs = [];
 let activeIndex = -1;
 let batch = null;
@@ -197,7 +197,7 @@ app.on("window-all-closed", () => {
 
 // ---- dialogs -------------------------------------------------------------
 
-ipcMain.handle("get-settings", async () => ({ ...settings, defaultTemplate: DEFAULT_TEMPLATE }));
+ipcMain.handle("get-settings", async () => ({ ...settings, defaultTemplate: DEFAULT_TEMPLATE, maxQueue: MAX_QUEUE }));
 
 ipcMain.handle("pick-resume", async () => {
   const r = await dialog.showOpenDialog(win, {
