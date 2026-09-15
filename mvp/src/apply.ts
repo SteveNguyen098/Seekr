@@ -259,6 +259,28 @@ export function isStandardRecruitmentConsent(label: string): boolean {
   // in discoverFields()), so the end anchor must tolerate trailing
   // whitespace/asterisks, not just whitespace.
   if (/^(the\s+)?(data protection|privacy|gdpr)\s+(notice|policy)(\s+acknowledg\w*)?[\s*]*$/i.test(label.trim())) return true;
+  // A policy TITLE rather than a sentence: "Zynga Application/Data Privacy
+  // Consent *", a real REQUIRED combobox on a live Greenhouse posting that
+  // was left blank because it reached the wording test at the bottom of
+  // this function, which demands "personal data" or "recruitment" nearby -
+  // words a title like this one simply doesn't spend space on.
+  //
+  // It can't join the anchored pattern above: the company name and the
+  // "Application/" prefix mean it doesn't start with the policy noun. So
+  // it's matched on shape instead - "privacy" run straight into "consent",
+  // in a label short enough to be a heading. Character classes rather than
+  // \b, for the same reason isLocationLabel above gives: a word-boundary
+  // escape here has now been mangled into a literal backspace twice, which
+  // compiles, type-checks, and silently matches nothing.
+  //
+  // The length cap is what keeps this narrow, and it is doing real work: a
+  // consent PARAGRAPH containing both words must fall through to the
+  // wording test, which judges it on its full scope. Only a title has
+  // nothing else in it left to judge. The broader-scope exclusion at the
+  // top of this function still runs first either way, so a
+  // marketing-flavoured title is rejected before it ever reaches here.
+  const asTitle = label.trim();
+  if (asTitle.length <= 60 && /(^|[^a-z])privacy[\s/-]+(consent|agreement)([^a-z]|$)/i.test(asTitle)) return true;
   // Consent to store/process the answers given to the EEO/demographic
   // survey on this same form. Narrow by construction - it covers only the
   // responses just provided (which are "prefer not to say" by default,

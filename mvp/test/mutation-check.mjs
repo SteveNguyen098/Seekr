@@ -160,6 +160,26 @@ const MUTATIONS = [
     to: "    labelLower === 'city' ||",
   },
   {
+    // The bug that shipped: a REQUIRED Zynga consent combobox left blank,
+    // because a title-shaped label never says "personal data" or
+    // "recruitment" - the words the wording test demands.
+    bug: "drop the title-shaped consent rule, leaving a required consent field blank",
+    spec: "labels",
+    fixture: "",
+    from: "if (asTitle.length <= 60 && /(^|[^a-z])privacy[\\s/-]+(consent|agreement)([^a-z]|$)/i.test(asTitle)) return true;",
+    to: "",
+  },
+  {
+    // The other direction, and the one that would actually be dangerous:
+    // without the length cap, any consent PARAGRAPH containing both words
+    // gets auto-acknowledged without its scope ever being read.
+    bug: "drop the length cap, letting a whole consent paragraph be auto-acknowledged",
+    spec: "labels",
+    fixture: "",
+    from: "if (asTitle.length <= 60 && /(^|[^a-z])privacy[\\s/-]+(consent|agreement)([^a-z]|$)/i.test(asTitle))",
+    to: "if (/(^|[^a-z])privacy[\\s/-]+(consent|agreement)([^a-z]|$)/i.test(asTitle))",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

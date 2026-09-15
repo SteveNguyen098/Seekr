@@ -48,6 +48,27 @@ const CONSENT: Case[] = [
   { label: "Data Protection Notice", want: true, why: "bare GDPR-style policy name" },
   { label: "I consent to the processing of my personal data for recruitment purposes", want: true, why: "explicit recruitment-data consent" },
   { label: "I agree to receive marketing emails and to share my data with third parties", want: false, why: "broader scope - never auto-checked" },
+
+  // THE BUG: a required Zynga combobox left blank on a live posting. The
+  // label is a TITLE, so it never spends words on "personal data" or
+  // "recruitment" - which is exactly what the wording test at the end of
+  // isStandardRecruitmentConsent demands before it will say yes.
+  { label: "Zynga Application/Data Privacy Consent *", want: true, why: "THE BUG: title-shaped consent, left blank on a live Zynga posting" },
+  { label: "Data Privacy Consent", want: true, why: "same shape, no company prefix" },
+  { label: "Privacy Agreement", want: true, why: "agreement rather than consent" },
+
+  // The title rule must not become a way around the scope exclusion...
+  { label: "Data Privacy Consent for marketing purposes", want: false, why: "title shape, but marketing scope still wins" },
+  { label: "Privacy Consent - share with third parties", want: false, why: "title shape, but third-party sharing still wins" },
+  // ...nor a way to short-circuit a full paragraph. Anything long enough to
+  // state its own scope must be judged on that scope, not on two of its
+  // words. This one reads as consent but never limits itself to recruitment.
+  {
+    label:
+      "I hereby give my privacy consent and confirm that the statements made by me in this application are true and complete to the best of my knowledge and belief.",
+    want: false,
+    why: "too long to be a title - must fall through to the wording test",
+  },
 ];
 
 let pass = 0;
