@@ -180,6 +180,37 @@ const MUTATIONS = [
     to: "if (/(^|[^a-z])privacy[\\s/-]+(consent|agreement)([^a-z]|$)/i.test(asTitle))",
   },
   {
+    // The dangerous direction. The whole point of the generic-only
+    // patterns is that a B.B.A. must never be answered "Bachelor of Arts"
+    // just because that option exists - a factual misstatement about
+    // someone's education, which is worse than an empty field.
+    //
+    // Anchors here are deliberately backslash-free: writing a regex into
+    // this file is how a \b became a literal backspace twice.
+    bug: "match any option containing the level word, so a B.B.A. is answered 'Bachelor of Arts'",
+    spec: "labels",
+    fixture: "",
+    from: "    if (level.test(value)) return generic;",
+    to: "    if (level.test(value)) return [new RegExp(value.split(' ')[0], 'i')];",
+  },
+  {
+    bug: "ignore the level test, so every degree falls back to the first level",
+    spec: "labels",
+    fixture: "",
+    from: "    if (level.test(value)) return generic;",
+    to: "    return generic;",
+  },
+  {
+    // The other direction on scope: without the label check, a prose
+    // answer that merely mentions a degree gets swapped for a dropdown
+    // level.
+    bug: "drop the education-label scope from the degree fallback",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!/degree|education|qualification|academic level|level of study/i.test(label)) return [];",
+    to: "",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

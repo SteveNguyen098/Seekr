@@ -13,7 +13,7 @@
  *
  *   npm run test:labels
  */
-import { isLocationLabel, isStandardRecruitmentConsent } from "../src/apply.js";
+import { genericDegreeOptions, isLocationLabel, isStandardRecruitmentConsent } from "../src/apply.js";
 
 interface Case {
   label: string;
@@ -71,6 +71,60 @@ const CONSENT: Case[] = [
   },
 ];
 
+// A dropdown's real option list, and what the generic-degree fallback is
+// allowed to pick from it.
+interface DegreeCase {
+  label: string;
+  value: string;
+  options: string[];
+  want: string | null;
+  why: string;
+}
+
+const GREENHOUSE_DEGREES = ["Bachelor's Degree", "Master's Degree", "Doctorate", "Associate's Degree", "High School", "Other"];
+// A list offering only SPECIFIC degrees and no generic level.
+const SPECIFIC_ONLY = ["Bachelor of Arts", "Bachelor of Science", "Bachelor of Fine Arts"];
+
+const DEGREE: DegreeCase[] = [
+  {
+    label: "Degree*",
+    value: "Bachelor of Business Administration",
+    options: GREENHOUSE_DEGREES,
+    want: "Bachelor's Degree",
+    why: "THE BUG: a resume's B.B.A. expanded truthfully, then matched nothing - required field left empty on a live SpaceX posting",
+  },
+  { label: "Degree*", value: "B.B.A.", options: GREENHOUSE_DEGREES, want: "Bachelor's Degree", why: "abbreviated form of the same credential" },
+  { label: "Degree*", value: "Master of Science", options: GREENHOUSE_DEGREES, want: "Master's Degree", why: "master level" },
+  { label: "Degree*", value: "MBA", options: GREENHOUSE_DEGREES, want: "Master's Degree", why: "an MBA is a master's - must not fall to bachelor" },
+  { label: "Degree*", value: "Ph.D.", options: GREENHOUSE_DEGREES, want: "Doctorate", why: "doctorate" },
+  { label: "Degree*", value: "Doctor of Education", options: GREENHOUSE_DEGREES, want: "Doctorate", why: "'Doctor of' without the word doctorate" },
+  { label: "Degree*", value: "Associate of Arts", options: GREENHOUSE_DEGREES, want: "Associate's Degree", why: "associate level" },
+  { label: "Highest level of education", value: "High School Diploma", options: GREENHOUSE_DEGREES, want: "High School", why: "secondary" },
+
+  // The line this must never cross. Being vaguer than the truth is fine;
+  // being specifically wrong about someone's education is not.
+  {
+    label: "Degree*",
+    value: "Bachelor of Business Administration",
+    options: SPECIFIC_ONLY,
+    want: null,
+    why: "MUST NOT answer a B.B.A. with 'Bachelor of Arts' just because it is on the list",
+  },
+  { label: "Degree*", value: "Master of Science", options: SPECIFIC_ONLY, want: null, why: "no generic option - leave the field for the user" },
+
+  // Scoped to education fields by label, so a prose answer that happens to
+  // mention a degree can't be swapped for a dropdown level.
+  {
+    label: "Why are you interested in this role?",
+    value: "I have a Bachelor of Science",
+    options: GREENHOUSE_DEGREES,
+    want: null,
+    why: "free-text question, not an education field",
+  },
+  { label: "What is your current job title?", value: "Bachelor", options: GREENHOUSE_DEGREES, want: null, why: "non-education label" },
+  { label: "Degree*", value: "Some college, no degree", options: GREENHOUSE_DEGREES, want: null, why: "level can't be read - existing skip stands" },
+];
+
 let pass = 0;
 let fail = 0;
 const run = (name: string, cases: Case[], fn: (s: string) => boolean) => {
@@ -89,6 +143,27 @@ run("isLocationLabel", LOCATION, isLocationLabel);
 // isStandardRecruitmentConsent is called with the ORIGINAL-case label in
 // apply.ts, so it is exercised that way here too.
 run("isStandardRecruitmentConsent", CONSENT, (s) => isStandardRecruitmentConsent(s));
+
+// Mirrors findMatchingOption(): first candidate pattern, first option it
+// matches. Asserting on the option actually picked, not just on whether a
+// pattern was returned - "did it match something" would stay green even if
+// it matched the wrong degree.
+console.log("\ngenericDegreeOptions");
+for (const c of DEGREE) {
+  let got: string | null = null;
+  outer: for (const pattern of genericDegreeOptions(c.label, c.value)) {
+    for (const option of c.options) {
+      if (pattern.test(option)) {
+        got = option;
+        break outer;
+      }
+    }
+  }
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(c.value).padEnd(38)} -> ${String(got)}`);
+  if (!ok) console.log(`        expected ${String(c.want)} - ${c.why}`);
+}
 
 console.log(`\n${"-".repeat(70)}`);
 console.log(fail ? `${pass} passed, ${fail} FAILED` : `${pass} passed, 0 failed - label predicates still mean what they claim`);

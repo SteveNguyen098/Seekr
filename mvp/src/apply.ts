@@ -1312,6 +1312,66 @@ function optionTextMatches(text: string, candidate: string | RegExp): boolean {
   return t === c || t.includes(c) || c.includes(t);
 }
 
+/**
+ * Fallback option patterns for an education field whose exact credential
+ * isn't on the dropdown's list.
+ *
+ * THE BUG: a resume stating "B.B.A." was expanded - correctly and
+ * truthfully - to "Bachelor of Business Administration", and then no
+ * option matched, because optionTextMatches() is containment in both
+ * directions and neither string contains the other. A REQUIRED Degree
+ * field was left empty on a live SpaceX posting.
+ *
+ * These patterns deliberately match ONLY generic, level-only options
+ * ("Bachelor's Degree", "Undergraduate"). They must never match a
+ * different SPECIFIC credential: answering a B.B.A. with "Bachelor of
+ * Arts" because the list happens to offer it is a factual misstatement
+ * about someone's education on a real application, which is strictly
+ * worse than leaving the field for them. The prompt already carries this
+ * rule in words ("being vaguer than the truth is fine; being specifically
+ * wrong is not") - this enforces the same thing in code, where it can be
+ * tested.
+ *
+ * Returns [] when the field isn't an education field or the level can't
+ * be read, in which case the existing "no match" skip stands.
+ */
+const DEGREE_LEVELS: { level: RegExp; generic: RegExp[] }[] = [
+  // Ordered most-specific first: an MBA is a master's, and "Doctor of
+  // Education" must not be read as a bachelor's just because it is checked
+  // later. The first level that matches wins.
+  {
+    level: /(^|[^a-z])(ph\.?d|doctorate|doctoral|d\.?phil|ed\.?d)([^a-z]|$)|doctor of/i,
+    generic: [/^(a\s+)?doctorate(\s+degree)?\s*\*?$/i, /^doctoral(\s+degree)?\s*\*?$/i, /^ph\.?\s?d\.?(\s+degree)?\s*\*?$/i],
+  },
+  {
+    level: /(^|[^a-z])(master|m\.?b\.?a|m\.?sc?|m\.?a|m\.?eng|m\.?ed|graduate)([^a-z]|$)/i,
+    generic: [/^(a\s+)?master(['’]s)?(\s+degree)?\s*\*?$/i, /^graduate(\s+degree)?\s*\*?$/i, /^post[\s-]?graduate(\s+degree)?\s*\*?$/i],
+  },
+  {
+    level: /(^|[^a-z])(bachelor|b\.?b\.?a|b\.?sc?|b\.?a|b\.?eng|b\.?f\.?a|undergraduate)([^a-z]|$)/i,
+    generic: [/^(a\s+)?bachelor(['’]s)?(\s+degree)?\s*\*?$/i, /^undergraduate(\s+degree)?\s*\*?$/i],
+  },
+  {
+    level: /(^|[^a-z])(associate|a\.?a|a\.?s)([^a-z]|$)/i,
+    generic: [/^(an\s+)?associate(['’]s)?(\s+degree)?\s*\*?$/i],
+  },
+  {
+    level: /(^|[^a-z])(high school|secondary school|ged|diploma)([^a-z]|$)/i,
+    generic: [/^high school(\s+(or equivalent|diploma))?\s*\*?$/i, /^ged\s*\*?$/i, /^secondary(\s+school)?\s*\*?$/i],
+  },
+];
+
+export function genericDegreeOptions(label: string, value: string): RegExp[] {
+  // Scoped to education fields by LABEL, not by the answer's wording: a
+  // free-text question that merely mentions a degree must not have its
+  // answer quietly swapped for a dropdown level.
+  if (!/degree|education|qualification|academic level|level of study/i.test(label)) return [];
+  for (const { level, generic } of DEGREE_LEVELS) {
+    if (level.test(value)) return generic;
+  }
+  return [];
+}
+
 /** Finds the first currently-rendered option matching any candidate, without clicking it. */
 async function findMatchingOption(ctx: FormContext, selector: string, candidates: (string | RegExp)[]) {
   const options = await getListboxOptions(ctx, selector);
@@ -2883,7 +2943,22 @@ export async function fillCurrentPage(
       }
 
       if (field.isCombobox) {
-        const picked = await selectComboboxOption(formCtx, field.selector, [value]);
+        let picked = await selectComboboxOption(formCtx, field.selector, [value]);
+        // Only on failure, and only for an education field: retry against
+        // the generic level options (see genericDegreeOptions). This runs
+        // strictly where the field was about to be skipped anyway, so it
+        // cannot change any match that already works.
+        if (!picked) {
+          const generic = genericDegreeOptions(field.label, value);
+          if (generic.length) {
+            picked = await selectComboboxOption(formCtx, field.selector, generic);
+            if (picked) {
+              notes.push(
+                `"${field.label.slice(0, 40)}": the list had no option for "${value}", so the generic "${picked}" was chosen instead - vaguer than your resume, but not wrong. Worth a look if the exact credential matters here.`
+              );
+            }
+          }
+        }
         if (picked) filled.push({ label: field.label, value: picked, generated: true, lowConfidence });
         else skipped.push({ label: field.label, reason: `could not find a matching option for "${value}" in this dropdown`, required });
         continue;
