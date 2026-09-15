@@ -290,6 +290,21 @@ export function isTickableAcknowledgement(
   return true;
 }
 
+/**
+ * True when a label asks for the LEVEL of the credential earned, as
+ * opposed to the institution (isSchoolLabel) or the subject studied.
+ *
+ * The two predicates are mutually exclusive by construction: each excludes
+ * the other's words, so "School" and "Degree" in the same education
+ * section never both claim a field.
+ */
+export function isDegreeLabel(labelLower: string): boolean {
+  // The subject and the dates are neither the level nor the institution,
+  // and must keep going to their own handling.
+  if (/field of study|major|gpa|graduation|school name|university name/i.test(labelLower)) return false;
+  return /(^|[^a-z])degrees?([^a-z]|$)|highest level of (education|study)|(^|[^a-z])education level|level of education/i.test(labelLower);
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -2948,6 +2963,34 @@ export async function fillCurrentPage(
     // Greenhouse, and this types the name and picks the real option.
     if (isSchoolLabel(labelLower) && profile.school) {
       await setField(profile.school);
+      continue;
+    }
+    // The degree comes from the profile too, but unlike the school it
+    // usually has to be generalised: the profile holds the real credential
+    // ("Bachelor of Business Administration") and a dropdown rarely offers
+    // that exact phrasing - which is precisely how a required Degree field
+    // was left empty on a live SpaceX posting.
+    //
+    // Exact first, so a list that DOES offer the real credential gets it.
+    // Only then the generic level, and only from genericDegreeOptions,
+    // which never matches a different specific degree.
+    if (isDegreeLabel(labelLower) && profile.degree) {
+      if (field.isCombobox) {
+        let picked = await selectComboboxOption(formCtx, field.selector, [profile.degree]);
+        if (!picked) {
+          const generic = genericDegreeOptions(field.label, profile.degree);
+          if (generic.length) picked = await selectComboboxOption(formCtx, field.selector, generic);
+          if (picked) {
+            notes.push(
+              `"${field.label.slice(0, 40)}": the list had no option for "${profile.degree}", so the generic "${picked}" was chosen instead - vaguer than your profile, but not wrong.`
+            );
+          }
+        }
+        if (picked) filled.push({ label: field.label, value: picked });
+        else skipped.push({ label: field.label, reason: `could not find a matching option for "${profile.degree}" in this dropdown`, required: field.required });
+      } else {
+        await setField(profile.degree);
+      }
       continue;
     }
     if ((labelLower === "state" || labelLower.includes("state/province") || labelLower.includes("state or province")) && profile.state) {

@@ -19,6 +19,16 @@ export interface UserProfile {
    * fixed facts and should never be generated at all.
    */
   school?: string;
+  /**
+   * The credential for an education section's "Degree" field, written the
+   * way the resume states it ("Bachelor of Business Administration").
+   *
+   * Dropdowns rarely offer that exact phrasing, so the fill path falls
+   * back to the generic level for the list in front of it - see
+   * genericDegreeOptions. Store the truth here; the generalising happens
+   * at fill time, where the real options are known.
+   */
+  degree?: string;
 }
 
 export interface PersonalContext {
@@ -42,6 +52,7 @@ const PROFILE_KEYS: Record<string, keyof UserProfile> = {
   "phone number": "phoneNumber",
   school: "school",
   university: "school",
+  degree: "degree",
 };
 
 function parseProfile(text: string): UserProfile {

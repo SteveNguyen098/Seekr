@@ -16,6 +16,7 @@
 import {
   genericDegreeOptions,
   isLocationLabel,
+  isDegreeLabel,
   isSchoolLabel,
   isStandardRecruitmentConsent,
   isTickableAcknowledgement,
@@ -129,6 +130,32 @@ const ACK: AckCase[] = [
     want: false,
     why: "checkboxes only",
   },
+];
+
+// The credential LEVEL field, answered from the profile. Mutually
+// exclusive with SCHOOL above - the exclusivity itself is asserted below,
+// since both live in the same education section.
+const DEGREE_LABEL: Case[] = [
+  { label: "Degree*", want: true, why: "THE BUG: required field left empty on a live SpaceX posting" },
+  { label: "Degrees", want: true, why: "plural" },
+  { label: "Highest level of education", want: true, why: "level phrasing" },
+  { label: "Education level", want: true, why: "level phrasing" },
+  { label: "What degree did you earn at this school?", want: true, why: "names a school but asks for the credential" },
+
+  { label: "School*", want: false, why: "the institution, handled by isSchoolLabel" },
+  { label: "University", want: false, why: "the institution" },
+
+  // These three come back false on the level words alone, so none of them
+  // exercises the exclusion guard...
+  { label: "Field of study", want: false, why: "the subject" },
+  { label: "Major", want: false, why: "the subject" },
+  { label: "Graduation date", want: false, why: "a date" },
+  // ...these do: each names a degree AND asks for something that is not
+  // the level. Without the guard they would be answered "Bachelor of
+  // Business Administration", burying the real question.
+  { label: "Degree field of study", want: false, why: "names a degree but asks the subject" },
+  { label: "Graduation date for this degree", want: false, why: "names a degree but asks a date" },
+  { label: "What was your major degree subject?", want: false, why: "names a degree but asks the subject" },
 ];
 
 // Consent labels that SHOULD be auto-acknowledged vs left for the human.
@@ -279,6 +306,20 @@ const run = (name: string, cases: Case[], fn: (s: string) => boolean) => {
 
 run("isLocationLabel", LOCATION, isLocationLabel);
 run("isSchoolLabel", SCHOOL, isSchoolLabel);
+run("isDegreeLabel", DEGREE_LABEL, isDegreeLabel);
+
+// Both live in the same education section, so a label claimed by both
+// would be answered by whichever branch the fill loop happens to reach
+// first - the kind of thing that only shows up on a real application.
+{
+  const both = [...SCHOOL, ...DEGREE_LABEL]
+    .map((c) => c.label)
+    .filter((l) => isSchoolLabel(l.toLowerCase()) && isDegreeLabel(l.toLowerCase()));
+  const ok = both.length === 0;
+  ok ? pass++ : fail++;
+  console.log(`\n  ${ok ? "PASS" : "FAIL"}  school and degree predicates never claim the same label`);
+  if (!ok) console.log(`        both claimed: ${both.join(", ")}`);
+}
 // isStandardRecruitmentConsent is called with the ORIGINAL-case label in
 // apply.ts, so it is exercised that way here too.
 run("isStandardRecruitmentConsent", CONSENT, (s) => isStandardRecruitmentConsent(s));

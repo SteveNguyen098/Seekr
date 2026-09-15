@@ -305,6 +305,15 @@ const MUTATIONS = [
     to: "",
   },
   {
+    // Without it, "Degree field of study" is answered with the credential
+    // from the profile, burying the question that was actually asked.
+    bug: "drop the subject/date exclusion, so a degree-adjacent question gets the credential",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/field of study|major|gpa|graduation|school name|university name/i.test(labelLower)) return false;",
+    to: "",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
