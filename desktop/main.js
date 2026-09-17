@@ -460,6 +460,16 @@ ipcMain.handle('scan-board', async (_e, { url, refresh }) => {
     '--out', path.join(MVP_DIR, 'out', 'Electron App Stuff'),
     '--suggest',
     '--json-out', jsonOut,
+    // Throwaway browser context, NOT the shared profile.
+    //
+    // Without this the scan inherits the CLI's default profile directory,
+    // which is byte-identical to the path batch slot 0 uses - so scanning a
+    // board while link 1 was being filled would put two Chromium instances
+    // on one user-data-dir and collide on SingletonLock.
+    //
+    // Nothing about reading a public board wants a stored login anyway, and
+    // a throwaway context skips the profile's disk churn entirely.
+    '--no-profile',
   ];
   if (refresh) args.push('--refresh');
 

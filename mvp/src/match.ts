@@ -215,12 +215,31 @@ export async function rankJobs(
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
   if (!toolUse) throw new Error("Claude did not return a ranking tool call.");
 
-  const { rankings } = toolUse.input as { rankings: { url: string; score: number; reasoning: string }[] };
+  // Validated rather than trusted, the same way triageTitles validates its
+  // indices. Observed live on a 194-posting board: `rankings` came back as
+  // something other than an array and .filter threw a TypeError, taking
+  // down a 40-second scan with a stack trace after all the work was done.
+  // A malformed response can now shorten the list, never crash the run.
+  const raw = (toolUse.input as { rankings?: unknown }).rankings;
+  const rankings = Array.isArray(raw) ? raw : [];
 
   const byUrl = new Map(candidates.map((c) => [c.url, c]));
   const results: RankedJob[] = rankings
+    .filter((r): r is { url: string; score: number; reasoning: string } =>
+      !!r && typeof r === "object" && typeof (r as { url?: unknown }).url === "string" && Number.isFinite((r as { score?: unknown }).score)
+    )
     .filter((r) => byUrl.has(r.url))
-    .map((r) => ({ job: byUrl.get(r.url)!, score: r.score, reasoning: r.reasoning }));
+    .map((r) => ({ job: byUrl.get(r.url)!, score: r.score, reasoning: String(r.reasoning ?? "") }));
+
+  // Scoring nothing at all is a failed call, not a board with no matches -
+  // those are very different things to report, and silently returning an
+  // empty list would show up as "0 postings read in full" after the work
+  // had already been done.
+  if (results.length === 0 && candidates.length > 0) {
+    throw new Error(
+      `Claude returned no usable rankings for ${candidates.length} posting(s). This is a transient response problem, not a verdict on the board - try the scan again.`
+    );
+  }
 
   // Score first, then URL as a tie-break. Without the second key, equally
   // scored postings keep whatever order the model happened to emit, so a

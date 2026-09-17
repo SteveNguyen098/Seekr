@@ -112,8 +112,14 @@ async function scanBoard(refresh) {
   $("suggestList").innerHTML = "";
   try {
     const res = await window.seekr.scanBoard({ url, refresh });
-    if (!res.ok && res.error) {
-      $("suggestNote").textContent = res.error;
+    // A failed scan must NOT fall through to renderSuggestions - an empty
+    // payload there reads as "nothing on this board is a fit", which is a
+    // verdict about the board rather than the truth, that the scan broke.
+    if (!res.ok) {
+      $("suggestMeta").textContent = "";
+      $("suggestNote").textContent =
+        res.error || `The scan didn't finish (exit code ${res.code}). The log below has the reason — scans can fail transiently, so it's worth trying again.`;
+      $("suggestList").innerHTML = "";
       return;
     }
     renderSuggestions(res.payload);
