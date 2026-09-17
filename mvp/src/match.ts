@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { JobPosting } from "./scrape.js";
 
 export const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5";
 
@@ -39,6 +40,110 @@ const RANK_TOOL: Anthropic.Tool = {
     required: ["rankings"],
   },
 };
+
+export interface TriagedTitle {
+  job: JobPosting;
+  why: string;
+}
+
+/** Upper bound on what one triage pass may shortlist, whatever the model returns. */
+export const MAX_SHORTLIST = 20;
+
+const TRIAGE_TOOL: Anthropic.Tool = {
+  name: "shortlist_titles",
+  description: "Pick the postings whose titles are worth reading in full for this candidate.",
+  input_schema: {
+    type: "object",
+    properties: {
+      shortlist: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            // Index, NOT url. With ~200 postings a copied-back URL is long,
+            // repetitive and easy to corrupt; an index is one token and is
+            // trivially validated against the list that was sent.
+            index: { type: "number", description: "The posting's number from the list, copied exactly." },
+            why: { type: "string", description: "A short phrase - why this title is plausible for the candidate." },
+          },
+          required: ["index", "why"],
+        },
+      },
+    },
+    required: ["shortlist"],
+  },
+};
+
+/**
+ * First pass over a whole board: pick which postings are worth OPENING.
+ *
+ * Titles only, deliberately. Fetching a description costs a page load, so
+ * on a 193-posting board the triage has to happen before any of them are
+ * opened - and ~200 titles is a few KB, which is one cheap call.
+ *
+ * Replaces a substring match against a fixed title list, which measured
+ * badly on a real board: of Sony Interactive Entertainment's 193 postings,
+ * exact-substring matching kept 3 and dropped "Senior Product Analyst",
+ * "Technical Planning Analytics Analyst" and "Payments Analyst" - roles
+ * that read as obvious candidates to a person. The list of target titles
+ * is still passed, but as a statement of intent rather than as the
+ * matching rule itself.
+ *
+ * Location is given to the model as context, never as a filter. On that
+ * same board a hard Atlanta/Remote gate left 0 of 193, because the 14
+ * remote postings had already been dropped on their titles.
+ */
+export async function triageTitles(
+  anthropic: Anthropic,
+  resumeText: string,
+  targetTitles: string[],
+  jobs: JobPosting[]
+): Promise<TriagedTitle[]> {
+  if (jobs.length === 0) return [];
+
+  const listBlock = jobs.map((j, i) => `${i}. ${j.title}${j.location ? ` — ${j.location}` : ""}`).join("\n");
+
+  const message = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 2048,
+    tools: [TRIAGE_TOOL],
+    tool_choice: { type: "tool", name: "shortlist_titles" },
+    messages: [
+      {
+        role: "user",
+        content:
+          `Here is a candidate's resume:\n\n${resumeText}\n\n` +
+          `Roles they have said they are looking for:\n${targetTitles.map((t) => `- ${t}`).join("\n")}\n\n` +
+          `Here are ${jobs.length} postings from one company's job board, as title and location only:\n\n${listBlock}\n\n` +
+          `Shortlist up to ${MAX_SHORTLIST} whose titles are worth reading in full for this candidate.\n\n` +
+          `- Judge by what the role plainly IS, not by whether its wording matches the list above. ` +
+          `"Analyst, Business Operations" and "Business Operations Analyst" are the same job; a title the list never anticipated can still be an obvious fit.\n` +
+          `- Respect seniority. This candidate is early-career, so a Director, Principal, Staff or Head-of role is not a fit however well the domain matches.\n` +
+          `- Stay in the candidate's actual domain. A software engineering role is not a fit for a business/operations analyst background, whatever the title shares.\n` +
+          `- Location is context, not a filter: include a strong fit in any location and let the later stage weigh it. Do not shortlist a weak fit just because it is remote.\n` +
+          `- Shortlist fewer than ${MAX_SHORTLIST} if fewer genuinely qualify. An empty shortlist is a valid answer for a board with nothing suitable on it.`,
+      },
+    ],
+  });
+
+  const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+  if (!toolUse) throw new Error("Claude did not return a triage tool call.");
+  const { shortlist } = toolUse.input as { shortlist: { index: number; why: string }[] };
+
+  // Validated against the list actually sent: an out-of-range or repeated
+  // index is dropped rather than trusted, so a bad response can shorten the
+  // shortlist but never invent a posting.
+  const seen = new Set<number>();
+  const picked: TriagedTitle[] = [];
+  for (const { index, why } of shortlist ?? []) {
+    if (!Number.isInteger(index) || index < 0 || index >= jobs.length) continue;
+    if (seen.has(index)) continue;
+    seen.add(index);
+    picked.push({ job: jobs[index], why });
+    if (picked.length >= MAX_SHORTLIST) break;
+  }
+  return picked;
+}
 
 export async function rankJobs(
   anthropic: Anthropic,

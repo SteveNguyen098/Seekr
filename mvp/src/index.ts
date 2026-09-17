@@ -7,8 +7,8 @@ import os from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { loadResume } from "./resume.js";
 import { listJobs, getJobDescription, classifyUrl } from "./scrape.js";
-import { filterByTitle, filterByLocation, passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
-import { rankJobs, type CandidateJob } from "./match.js";
+import { passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
+import { MAX_SHORTLIST, rankJobs, triageTitles, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
 import { generateTailoredResume } from "./resumeGenerator.js";
@@ -82,7 +82,11 @@ if (!process.env.ANTHROPIC_API_KEY) {
 let careerUrl = args["career-url"];
 const resumePath = args["resume"];
 const outDir = path.resolve(args["out"] || "./out");
-const MAX_CANDIDATES_TO_INSPECT = 8;
+// Tuned for "pick the single best posting to apply to", where reading
+// beyond the first handful buys nothing. Suggestion mode wants the whole
+// shortlist read, or the last few triaged postings are silently never
+// opened - measured on a 193-job board that shortlisted 10 and inspected 8.
+const MAX_CANDIDATES_TO_INSPECT = args["suggest"] === "true" ? MAX_SHORTLIST : 8;
 
 let fileCriteria: CriteriaFile = {};
 if (args["criteria"]) {
@@ -279,26 +283,35 @@ try {
     const allJobs = await listJobs(page, careerUrl!);
     console.log(`  -> found ${allJobs.length} postings`);
 
-    const titleMatches = filterByTitle(allJobs, criteria);
-    console.log(`  -> ${titleMatches.length} match target titles [${targetTitles.join(", ")}]`);
-    if (titleMatches.length === 0) {
-      console.log("No postings matched the target titles. Try broader keywords.");
-      await stopEarly("no title matches");
+    // Title triage by the model rather than substring matching against a
+    // fixed list. Measured on Sony Interactive Entertainment's 193-posting
+    // board: substring matching kept 3, and the location filter then
+    // dropped all 3, leaving nothing at all. The same 193 titles triaged
+    // here yield 8 plausible roles in one call - including the two remote
+    // analyst postings the old path discarded on their wording.
+    console.log(`\nTriaging ${allJobs.length} title(s) against the resume...`);
+    const shortlist = await triageTitles(anthropic, resume.text, targetTitles, allJobs);
+    console.log(`  -> ${shortlist.length} worth opening`);
+    for (const s of shortlist) console.log(`     ${s.job.title} (${s.job.location || "location not stated"})`);
+    if (shortlist.length === 0) {
+      console.log("Nothing on this board looks like a fit. Try a different board, or widen the target titles.");
+      await stopEarly("no titles worth opening");
     }
 
-    const locationMatches = filterByLocation(titleMatches, criteria);
-    if (criteria.acceptableLocations?.length) {
-      console.log(
-        `  -> ${locationMatches.length} pass the location filter [${criteria.acceptableLocations.join(", ")}] (${titleMatches.length - locationMatches.length} dropped for being tied to a specific non-matching place)`
-      );
-    }
-    if (locationMatches.length === 0) {
-      console.log("No postings survived the location filter.");
-      await stopEarly("no location matches");
+    // Location is advisory from here on, never a gate. A hard
+    // Atlanta/Remote filter left 0 of 193 on that board, because every
+    // remote posting had already been dropped on its title; rankJobs reads
+    // the full description and weighs location itself, and
+    // detectLocationPreference below still flags a mismatch out loud.
+    const offLocation = criteria.acceptableLocations?.length
+      ? shortlist.filter((s) => s.job.location.trim() && !criteria.acceptableLocations!.some((l) => s.job.location.toLowerCase().includes(l.toLowerCase())))
+      : [];
+    if (offLocation.length) {
+      console.log(`  note: ${offLocation.length} of these are outside [${criteria.acceptableLocations!.join(", ")}] - shown anyway, flagged per posting`);
     }
 
     const candidates: CandidateJob[] = [];
-    for (const job of locationMatches.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
+    for (const { job } of shortlist.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
       const { text } = await getJobDescription(page, job.url);
       const hardCheck = passesHardRequirements(text, criteria);
       if (!hardCheck.pass) {
@@ -317,6 +330,42 @@ try {
     const ranked = await rankJobs(anthropic, resume.text, candidates);
     for (const r of ranked) {
       console.log(`  [${r.score.toFixed(0)}] ${r.job.title} (${r.job.location}) - ${r.reasoning}`);
+    }
+
+    // Suggestion mode: the whole ranked list is the deliverable, and the
+    // person picks. Everything above was already computed on the way to
+    // choosing one posting - this stops throwing the rest away.
+    if (args["suggest"] === "true") {
+      const suggestions = ranked
+        .filter((r) => r.score >= minMatchScore)
+        .map((r) => ({
+          title: r.job.title,
+          url: r.job.url,
+          location: r.job.location,
+          score: Math.round(r.score),
+          reasoning: r.reasoning,
+          // Advisory only - the posting is suggested either way, and the
+          // shell shows this as a flag rather than hiding the row.
+          offLocation:
+            !!r.job.location.trim() &&
+            !!criteria.acceptableLocations?.length &&
+            !criteria.acceptableLocations.some((l) => r.job.location.toLowerCase().includes(l.toLowerCase())),
+        }));
+
+      console.log(`\n${suggestions.length} suggestion(s) at or above the minimum score of ${minMatchScore}:`);
+      for (const s of suggestions) {
+        console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${s.offLocation ? "  ! outside your preferred locations" : ""}`);
+        console.log(`        ${s.reasoning}`);
+        console.log(`        ${s.url}`);
+      }
+      if (suggestions.length === 0) {
+        console.log(`  (${ranked.length} were read in full, none scored ${minMatchScore} or above)`);
+      }
+      if (args["json-out"]) {
+        await writeFile(path.resolve(args["json-out"]), JSON.stringify({ board: careerUrl, scanned: allJobs.length, opened: candidates.length, suggestions }, null, 2));
+      }
+      await browser.close();
+      process.exit(0);
     }
 
     best = ranked[0];
