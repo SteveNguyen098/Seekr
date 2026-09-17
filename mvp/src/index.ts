@@ -5,6 +5,8 @@ import readline from "node:readline/promises";
 import path from "node:path";
 import os from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { loadResume } from "./resume.js";
 import { listJobs, getJobDescription, classifyUrl } from "./scrape.js";
 import { passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
@@ -24,6 +26,31 @@ function parseArgs(argv: string[]) {
     }
   }
   return args;
+}
+
+interface Suggestion {
+  title: string;
+  url: string;
+  location: string;
+  score: number;
+  reasoning: string;
+  offLocation: boolean;
+  meetsBar: boolean;
+}
+
+/** Shared by a freshly scored board and a pinned one, so both read identically. */
+function printSuggestions(suggestions: Suggestion[], minScore: number): void {
+  const overBar = suggestions.filter((s) => s.meetsBar).length;
+  console.log(`\n${suggestions.length} posting(s) read in full, best first - ${overBar} at or above your minimum score of ${minScore}:`);
+  for (const s of suggestions) {
+    const flags = `${s.meetsBar ? "" : "  (below your score bar)"}${s.offLocation ? "  ! outside your preferred locations" : ""}`;
+    console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${flags}`);
+    console.log(`        ${s.reasoning}`);
+    console.log(`        ${s.url}`);
+  }
+  if (overBar === 0 && suggestions.length > 0) {
+    console.log(`\n  Nothing cleared ${minScore}. The list above is still ordered best-first - worth a look before moving to another board.`);
+  }
 }
 
 function usageAndExit(): never {
@@ -283,6 +310,36 @@ try {
     const allJobs = await listJobs(page, careerUrl!);
     console.log(`  -> found ${allJobs.length} postings`);
 
+    // A pinned result for this exact board + resume + criteria.
+    //
+    // Both model passes are genuinely non-deterministic and cannot be made
+    // otherwise: sampling parameters are removed on this model family (a
+    // temperature returns 400), and anchoring the scoring into named bands
+    // was measured and did not help - mean score spread across four runs
+    // went 8.9 to 9.3 points, and the shortlist differed on every run.
+    //
+    // So stability comes from not re-running the call. Re-opening the same
+    // board returns the same list until a refresh is asked for explicitly,
+    // which is also the honest behaviour: nothing about the board changed,
+    // so the recommendation should not change either.
+    const suggestMode = args["suggest"] === "true";
+    const pinKey = createHash("sha256")
+      .update(JSON.stringify({ board: careerUrl, titles: allJobs.map((j) => j.url).sort(), resume: resume.text, criteria, minMatchScore }))
+      .digest("hex")
+      .slice(0, 16);
+    const pinPath = path.join(outDir, "suggestions", `${pinKey}.json`);
+
+    if (suggestMode && args["refresh"] !== "true" && existsSync(pinPath)) {
+      const pinned = JSON.parse(await readFile(pinPath, "utf-8"));
+      console.log(`\nReusing the suggestions already made for this board (${pinned.pinnedAt}).`);
+      console.log(`  Nothing about the board or your resume has changed, so the list has not been re-scored.`);
+      console.log(`  Use --refresh to score it again - the two model passes are not deterministic, so the list will differ slightly.\n`);
+      printSuggestions(pinned.suggestions, minMatchScore);
+      if (args["json-out"]) await writeFile(path.resolve(args["json-out"]), JSON.stringify(pinned, null, 2));
+      await browser.close();
+      process.exit(0);
+    }
+
     // Title triage by the model rather than substring matching against a
     // fixed list. Measured on Sony Interactive Entertainment's 193-posting
     // board: substring matching kept 3, and the location filter then
@@ -359,22 +416,21 @@ try {
           meetsBar: r.score >= minMatchScore,
         }));
 
-      const overBar = suggestions.filter((s) => s.meetsBar).length;
-      console.log(
-        `\n${suggestions.length} posting(s) read in full, best first` +
-          ` - ${overBar} at or above your minimum score of ${minMatchScore}:`
-      );
-      for (const s of suggestions) {
-        const flags = `${s.meetsBar ? "" : "  (below your score bar)"}${s.offLocation ? "  ! outside your preferred locations" : ""}`;
-        console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${flags}`);
-        console.log(`        ${s.reasoning}`);
-        console.log(`        ${s.url}`);
-      }
-      if (overBar === 0 && suggestions.length > 0) {
-        console.log(`\n  Nothing cleared ${minMatchScore}. The list above is still ordered best-first - worth a look before moving to another board.`);
-      }
+      printSuggestions(suggestions, minMatchScore);
+
+      const payload = {
+        board: careerUrl,
+        scanned: allJobs.length,
+        opened: candidates.length,
+        pinnedAt: new Date().toISOString(),
+        suggestions,
+      };
+      // Pinned so re-opening this board returns this same list rather than
+      // re-rolling two non-deterministic passes.
+      await mkdir(path.dirname(pinPath), { recursive: true });
+      await writeFile(pinPath, JSON.stringify(payload, null, 2));
       if (args["json-out"]) {
-        await writeFile(path.resolve(args["json-out"]), JSON.stringify({ board: careerUrl, scanned: allJobs.length, opened: candidates.length, suggestions }, null, 2));
+        await writeFile(path.resolve(args["json-out"]), JSON.stringify(payload, null, 2));
       }
       await browser.close();
       process.exit(0);

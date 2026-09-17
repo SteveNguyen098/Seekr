@@ -3,6 +3,15 @@ import type { JobPosting } from "./scrape.js";
 
 export const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5";
 
+/**
+ * Sampling parameters are NOT available here. temperature, top_p and top_k
+ * were removed on this model family - claude-sonnet-5 returns
+ * "400 `temperature` is deprecated for this model", so the obvious fix for
+ * run-to-run variance does not exist. Variance is reduced by constraining
+ * the JUDGEMENT instead (see the scoring bands in rankJobs) and by making
+ * the ordering deterministic once scores come back.
+ */
+
 export interface CandidateJob {
   title: string;
   url: string;
@@ -182,7 +191,23 @@ export async function rankJobs(
     messages: [
       {
         role: "user",
-        content: `Here is a candidate's resume:\n\n${resumeText}\n\nHere are ${candidates.length} job postings the candidate might apply to:\n\n${postingsBlock}\n\nScore each posting on how well it fits the candidate's background, skills, and experience level. Be honest about mismatches (e.g. wrong seniority, wrong domain).${locationBlock}`,
+        content:
+          `Here is a candidate's resume:\n\n${resumeText}\n\n` +
+          `Here are ${candidates.length} job postings the candidate might apply to:\n\n${postingsBlock}\n\n` +
+          `Score each posting on how well it fits the candidate's background, skills, and experience level. Be honest about mismatches (e.g. wrong seniority, wrong domain).\n\n` +
+          // Anchored bands, because sampling parameters are unavailable on
+          // this model family and an unanchored 0-100 scale is where the
+          // run-to-run drift lives: the same posting scored 40 and 28 on
+          // consecutive runs. Naming what each band MEANS gives the number
+          // something to be anchored to.
+          `Use these bands, and say which band you are applying:\n` +
+          `- 80-100: squarely the role they already do, at their level, somewhere they can work.\n` +
+          `- 60-79: clearly plausible - a stretch or a sidestep in one dimension only.\n` +
+          `- 40-59: real overlap, but a definite mismatch in seniority, domain or location.\n` +
+          `- 20-39: some transferable skills, but they are not a candidate a recruiter would shortlist.\n` +
+          `- 0-19: wrong role, wrong field, or far beyond their experience.\n\n` +
+          `Score in multiples of 5. Judge each posting on its own against the bands, not relative to the others in this list - the same posting must land in the same band whether it appears alongside strong or weak company.` +
+          locationBlock,
       },
     ],
   });
@@ -197,6 +222,10 @@ export async function rankJobs(
     .filter((r) => byUrl.has(r.url))
     .map((r) => ({ job: byUrl.get(r.url)!, score: r.score, reasoning: r.reasoning }));
 
-  results.sort((a, b) => b.score - a.score);
+  // Score first, then URL as a tie-break. Without the second key, equally
+  // scored postings keep whatever order the model happened to emit, so a
+  // list can reshuffle between runs with no score having changed - which
+  // reads to the person as the recommendation itself having changed.
+  results.sort((a, b) => b.score - a.score || a.job.url.localeCompare(b.job.url));
   return results;
 }
