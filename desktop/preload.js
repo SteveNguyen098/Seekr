@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("seekr", {
   stop: () => ipcRenderer.invoke("stop"),
   reset: () => ipcRenderer.invoke("reset"),
   saveReport: (payload) => ipcRenderer.invoke("save-report", payload),
+  scanBoard: (opts) => ipcRenderer.invoke("scan-board", opts),
+  stopScan: () => ipcRenderer.invoke("stop-scan"),
   on: (channel, cb) => {
     const allowed = [
       "queue-started",
@@ -17,6 +19,9 @@ contextBridge.exposeInMainWorld("seekr", {
       "run-awaiting-input",
       "job-finished",
       "queue-finished",
+      "scan-started",
+      "scan-output",
+      "scan-finished",
     ];
     if (allowed.includes(channel)) ipcRenderer.on(channel, (_e, payload) => cb(payload));
   },

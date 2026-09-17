@@ -121,6 +121,47 @@ button:disabled { opacity: .45; cursor: default; }
   color: #c9d1d9; white-space: pre-wrap; word-break: break-word;
 }
 
+/* Board scan + suggestions */
+.boardRow {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--dim);
+}
+.boardRow .lbl { flex: 0 0 auto; }
+.boardRow input { flex: 1; }
+
+.suggestions {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.suggestions h2 { margin-bottom: 4px; }
+.suggestions .sub { text-transform: none; letter-spacing: 0; margin-left: 8px; }
+.suggestions .hint { margin: 0 0 12px; color: var(--dim); font-size: 12px; }
+
+.suggestRow {
+  display: grid;
+  grid-template-columns: 46px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+.suggestRow:last-child { border-bottom: none; }
+/* The score column is the scanning axis, so it stays fixed-width and
+   right-aligned - a ragged left edge here makes the list hard to read. */
+.suggestScore {
+  font-size: 17px; font-weight: 600; text-align: right;
+  color: var(--dim); font-variant-numeric: tabular-nums; padding-top: 1px;
+}
+.suggestRow.meetsBar .suggestScore { color: var(--ok); }
+.suggestTitle { font-size: 14px; font-weight: 600; }
+.suggestTitle .tag { vertical-align: middle; }
+.suggestWhy { color: var(--dim); font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.suggestRow .status { margin-left: 8px; }
+
 /* Problem-report panel */
 .reportPanel {
   background: var(--panel);

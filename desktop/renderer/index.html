@@ -30,6 +30,13 @@
         <span id="status" class="status">Idle</span>
       </div>
 
+      <div class="boardRow">
+        <span class="lbl">Or scan a whole job board</span>
+        <input id="boardUrl" type="text" placeholder="https://job-boards.greenhouse.io/company" spellcheck="false" />
+        <button id="scan" class="ghost small">Find jobs</button>
+        <button id="rescan" class="ghost small" title="Score this board again. The ranking is not deterministic, so the list will differ slightly.">Re-score</button>
+      </div>
+
       <div class="settingRow">
         <span class="lbl">Resume template</span>
         <span id="resume" class="val">…</span>
@@ -66,6 +73,12 @@
     </section>
 
     <!-- One card is appended here per link, as each finishes filling. -->
+    <section id="suggestions" class="suggestions hidden">
+      <h2>Suggested jobs <span id="suggestMeta" class="sub"></span></h2>
+      <p id="suggestNote" class="hint"></p>
+      <div id="suggestList"></div>
+    </section>
+
     <div id="results"></div>
 
     <section class="log">

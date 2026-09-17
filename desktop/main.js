@@ -427,6 +427,84 @@ ipcMain.handle("reset", async () => {
 // The captured pages are the point. A snapshot replays through the
 // regression harness, so a report can become a permanent test rather than
 // a folder nobody opens again.
+// Scan a job board and return a ranked shortlist, without filling anything.
+//
+// Deliberately separate from the run queue: this opens no application form
+// and touches no employer's submit button. It is the "what's worth my time"
+// half, and the person decides which of its results become a run.
+//
+// No --profile and no --headed: nothing here needs a visible window or a
+// stored login, and a board scan sharing the batch's browser would fight
+// the tabs already open for review.
+let scanProc = null;
+ipcMain.handle('scan-board', async (_e, { url, refresh }) => {
+  if (scanProc) return { ok: false, error: 'A board scan is already running.' };
+  const boardUrl = String(url || '').trim();
+  if (!boardUrl) return { ok: false, error: 'Paste a job board link first.' };
+
+  const resume = settings.resume;
+  if (!resume || !fs.existsSync(resume)) {
+    return { ok: false, error: 'No resume template set. Use Change… to pick one.' };
+  }
+  const tsxCli = path.join(MVP_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  if (!fs.existsSync(tsxCli)) {
+    return { ok: false, error: `Could not find tsx at ${tsxCli}. Run "npm install" in the mvp folder.` };
+  }
+
+  const jsonOut = path.join(os.tmpdir(), `seekr-scan-${Date.now()}.json`);
+  const args = [
+    'src/index.ts',
+    '--career-url', boardUrl,
+    '--criteria', './criteria.json',
+    '--resume', resume,
+    '--out', path.join(MVP_DIR, 'out', 'Electron App Stuff'),
+    '--suggest',
+    '--json-out', jsonOut,
+  ];
+  if (refresh) args.push('--refresh');
+
+  send('scan-started', { url: boardUrl, refresh: !!refresh });
+
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [tsxCli, ...args], {
+      cwd: MVP_DIR,
+      shell: false,
+      env: { ...process.env, FORCE_COLOR: '0', ELECTRON_RUN_AS_NODE: '1' },
+    });
+    scanProc = proc;
+    proc.stdout.on('data', (b) => send('scan-output', { text: b.toString() }));
+    proc.stderr.on('data', (b) => send('scan-output', { text: b.toString() }));
+
+    proc.on('close', (code) => {
+      scanProc = null;
+      let payload = null;
+      try {
+        if (fs.existsSync(jsonOut)) {
+          payload = JSON.parse(fs.readFileSync(jsonOut, 'utf-8'));
+          fs.unlinkSync(jsonOut);
+        }
+      } catch (err) {
+        send('scan-output', { text: `\n[shell] could not read scan results: ${err.message}\n` });
+      }
+      // A board with nothing suitable on it exits 0 with no file. That is a
+      // real answer, not a failure, so it resolves rather than erroring.
+      send('scan-finished', { ok: code === 0, code, payload });
+      resolve({ ok: code === 0, code, payload });
+    });
+  });
+});
+
+ipcMain.handle('stop-scan', async () => {
+  if (!scanProc) return { ok: true };
+  if (process.platform === 'win32') {
+    await new Promise((r) => execFile('taskkill', ['/pid', String(scanProc.pid), '/T', '/F'], () => r()));
+  } else {
+    try { process.kill(scanProc.pid, 'SIGKILL'); } catch {}
+  }
+  scanProc = null;
+  return { ok: true };
+});
+
 ipcMain.handle('save-report', async (_e, payload) => {
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);

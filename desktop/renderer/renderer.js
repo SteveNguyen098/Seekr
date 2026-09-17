@@ -71,6 +71,117 @@ function renumberLinks() {
 addLinkRow();
 $("addLink").addEventListener("click", () => addLinkRow()?.focus());
 
+// ---- board scan -> suggestions -----------------------------------------
+
+// Puts a suggested posting into the queue rather than filling it straight
+// away. Picking three jobs off a board and running them together is the
+// normal shape of this, and it reuses the queue that already exists instead
+// of inventing a second way to start a run.
+function queueSuggestion(url) {
+  if (running) return { ok: false, why: "A batch is already running." };
+  const inputs = linkInputs();
+  if (inputs.some((i) => i.value.trim() === url)) return { ok: false, why: "Already queued." };
+  const empty = inputs.find((i) => !i.value.trim());
+  if (empty) {
+    empty.value = url;
+    return { ok: true };
+  }
+  const added = addLinkRow(url);
+  if (!added) return { ok: false, why: `Queue is full (${MAX_LINKS}).` };
+  return { ok: true };
+}
+
+let scanning = false;
+function setScanning(on) {
+  scanning = on;
+  $("scan").disabled = on;
+  $("rescan").disabled = on;
+  $("boardUrl").disabled = on;
+  $("scan").textContent = on ? "Scanning…" : "Find jobs";
+}
+
+async function scanBoard(refresh) {
+  const url = $("boardUrl").value.trim();
+  if (!url) return;
+  setScanning(true);
+  $("suggestions").classList.remove("hidden");
+  $("suggestMeta").textContent = "";
+  $("suggestNote").textContent = refresh
+    ? "Re-scoring this board — reading each shortlisted posting in full. This takes a minute or two."
+    : "Reading the board — every page, then each shortlisted posting in full. This takes a minute or two.";
+  $("suggestList").innerHTML = "";
+  try {
+    const res = await window.seekr.scanBoard({ url, refresh });
+    if (!res.ok && res.error) {
+      $("suggestNote").textContent = res.error;
+      return;
+    }
+    renderSuggestions(res.payload);
+  } finally {
+    setScanning(false);
+  }
+}
+
+$("scan").addEventListener("click", () => scanBoard(false));
+$("rescan").addEventListener("click", () => scanBoard(true));
+$("boardUrl").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !scanning) scanBoard(false);
+});
+
+function renderSuggestions(payload) {
+  const list = $("suggestList");
+  list.innerHTML = "";
+  if (!payload || !payload.suggestions || payload.suggestions.length === 0) {
+    $("suggestMeta").textContent = "";
+    $("suggestNote").textContent =
+      "Nothing on this board looked like a fit — see the log below for how far it got.";
+    return;
+  }
+  const s = payload.suggestions;
+  const overBar = s.filter((x) => x.meetsBar).length;
+  $("suggestMeta").textContent = `${payload.scanned} scanned · ${payload.opened} read in full`;
+  $("suggestNote").textContent =
+    `${s.length} ranked best-first, ${overBar} clearing your score bar. ` +
+    `Scores are a judgement call, not a measurement — read the reasoning before queueing anything.`;
+
+  for (const job of s) {
+    const row = document.createElement("div");
+    row.className = "suggestRow" + (job.meetsBar ? " meetsBar" : "");
+
+    const score = document.createElement("div");
+    score.className = "suggestScore";
+    score.textContent = job.score;
+
+    const body = document.createElement("div");
+    body.className = "suggestBody";
+    const flags =
+      (job.meetsBar ? "" : '<span class="tag low">below bar</span>') +
+      (job.offLocation ? '<span class="tag low">off-location</span>' : "");
+    body.innerHTML =
+      `<div class="suggestTitle">${esc(job.title)}${flags}</div>` +
+      `<div class="meta">${esc(job.location || "location not stated")}</div>` +
+      `<div class="suggestWhy">${esc(job.reasoning)}</div>`;
+
+    const act = document.createElement("div");
+    const add = document.createElement("button");
+    add.className = "ghost small";
+    add.textContent = "Add to queue";
+    const note = document.createElement("span");
+    note.className = "status";
+    add.addEventListener("click", () => {
+      const r = queueSuggestion(job.url);
+      note.textContent = r.ok ? "queued" : r.why;
+      if (r.ok) add.disabled = true;
+    });
+    act.append(add, note);
+
+    row.append(score, body, act);
+    list.appendChild(row);
+  }
+}
+
+window.seekr.on("scan-output", ({ text }) => appendLog(text));
+
 function appendLog(text) {
   logEl.textContent += text;
   logEl.scrollTop = logEl.scrollHeight;
