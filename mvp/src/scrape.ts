@@ -12,11 +12,77 @@ const NAV_WORDS = new Set([
   "blog", "help", "faq", "back to jobs", "apply", "submit",
 ]);
 
+/** Hard stop, so a board that never returns an empty page can't loop forever. */
+const MAX_BOARD_PAGES = 25;
+
+/**
+ * The board URL for page N.
+ *
+ * Its own function because the failure it guards against is silent and
+ * easy to reintroduce: a board URL copied out of a browser usually already
+ * carries "page=1", and appending rather than replacing yields
+ * "?page=1&page=2" - which most servers resolve to the FIRST value, so
+ * every request quietly returns page 1 and the walk stops after one page
+ * having "found" 50 jobs. Other query params (gh_src and friends) must
+ * survive, since some boards scope their results by them.
+ */
+export function boardPageUrl(careerUrl: string, pageNum: number): string {
+  const url = new URL(careerUrl);
+  url.searchParams.set("page", String(pageNum));
+  return url.toString();
+}
+
+/**
+ * Walks a paginated board and returns every posting across all its pages.
+ *
+ * THE BUG this fixes was silent, which is what made it worth measuring
+ * rather than eyeballing: Greenhouse serves 50 postings per page, so a
+ * board of 193 came back as 50 with no error, no warning, and a perfectly
+ * plausible-looking list. Measured on Sony Interactive Entertainment's
+ * board - 50/50/50/43 across four pages, matching the "193 jobs" the page
+ * states about itself.
+ *
+ * Greenhouse paginates by URL (`?page=N`), which is why this works at all:
+ * its own pager renders as JavaScript buttons with no hrefs, so there is
+ * nothing to follow in the DOM. Confirmed on that board - a[href*='page=']
+ * matches nothing.
+ *
+ * Scoped to Greenhouse deliberately. Lever and the generic fallback keep
+ * their existing single-page behaviour rather than having an unverified
+ * pagination scheme guessed at for them.
+ *
+ * Two independent stop conditions, because they fail differently: an empty
+ * page ends a well-behaved board (verified: page=5 returns 0 here), and a
+ * page contributing no NEW urls ends one that clamps out-of-range requests
+ * to the last page instead - which would otherwise repeat forever.
+ */
+export async function listJobs(page: Page, careerUrl: string): Promise<JobPosting[]> {
+  if (!/greenhouse\.io/.test(careerUrl)) return listJobsOnePage(page, careerUrl);
+
+  const collected: JobPosting[] = [];
+  const seenUrls = new Set<string>();
+
+  for (let pageNum = 1; pageNum <= MAX_BOARD_PAGES; pageNum++) {
+    const batch = await listJobsOnePage(page, boardPageUrl(careerUrl, pageNum));
+    if (batch.length === 0) break;
+
+    const before = seenUrls.size;
+    for (const job of batch) {
+      if (seenUrls.has(job.url)) continue;
+      seenUrls.add(job.url);
+      collected.push(job);
+    }
+    if (seenUrls.size === before) break;
+  }
+
+  return collected;
+}
+
 /**
  * Layered strategy: try well-known ATS DOM patterns first (reliable), then
  * fall back to a generic heuristic for arbitrary career pages.
  */
-export async function listJobs(page: Page, careerUrl: string): Promise<JobPosting[]> {
+async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPosting[]> {
   await page.goto(careerUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
     page.goto(careerUrl, { waitUntil: "load", timeout: 30000 })
   );

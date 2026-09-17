@@ -314,6 +314,17 @@ const MUTATIONS = [
     to: "",
   },
   {
+    // Silent when it breaks: "?page=1&page=2" resolves to the first value
+    // on most servers, so every request returns page 1 and a 193-job board
+    // reports 50 with no error.
+    bug: "append the page param instead of replacing it",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: '  url.searchParams.set("page", String(pageNum));',
+    to: '  url.searchParams.append("page", String(pageNum));',
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

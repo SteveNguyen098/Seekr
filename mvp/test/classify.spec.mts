@@ -9,7 +9,7 @@
  *   npm run test:classify
  */
 import { chromium } from "playwright";
-import { classifyUrl } from "../src/scrape.js";
+import { boardPageUrl, classifyUrl } from "../src/scrape.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -106,6 +106,31 @@ for (const c of CASES) {
 }
 
 await browser.close();
+
+// boardPageUrl: pure, and the silent half of board pagination. Appending
+// instead of replacing yields "?page=1&page=2", which most servers resolve
+// to the FIRST value - so every request returns page 1, the walk stops
+// after one page, and the board looks like it only had 50 jobs.
+console.log("\nboardPageUrl");
+const PAGE_URLS: [string, number, string, string][] = [
+  [
+    "https://job-boards.greenhouse.io/x?gh_src=abc&page=1",
+    3,
+    "https://job-boards.greenhouse.io/x?gh_src=abc&page=3",
+    "THE BUG: a copied board URL already carries page=1 - it must be replaced, not appended",
+  ],
+  ["https://job-boards.greenhouse.io/x?gh_src=abc", 2, "https://job-boards.greenhouse.io/x?gh_src=abc&page=2", "other query params survive - some boards scope results by them"],
+  ["https://job-boards.greenhouse.io/x", 1, "https://job-boards.greenhouse.io/x?page=1", "no query string at all"],
+  ["https://job-boards.greenhouse.io/x?page=7&page=9", 2, "https://job-boards.greenhouse.io/x?page=2", "duplicates already present collapse to one"],
+];
+for (const [input, n, want, guards] of PAGE_URLS) {
+  const got = boardPageUrl(input, n);
+  const ok = got === want && new URL(got).searchParams.getAll("page").length === 1;
+  ok ? passed++ : failed++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  page ${n}: ${got}`);
+  if (!ok) console.log(`        expected ${want} - ${guards}`);
+}
+
 console.log(`\n${"-".repeat(70)}`);
 console.log(failed ? `${passed} passed, ${failed} FAILED` : `${passed} passed, 0 failed - a dead posting is still told apart from a board`);
 process.exit(failed ? 1 : 0);
