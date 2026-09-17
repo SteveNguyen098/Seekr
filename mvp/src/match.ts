@@ -148,8 +148,25 @@ export async function triageTitles(
 export async function rankJobs(
   anthropic: Anthropic,
   resumeText: string,
-  candidates: CandidateJob[]
+  candidates: CandidateJob[],
+  acceptableLocations: string[] = []
 ): Promise<RankedJob[]> {
+  // Location is weighed HERE rather than filtered earlier, because a hard
+  // pre-filter measured terribly: on a 193-posting board an Atlanta/Remote
+  // gate left nothing at all. But leaving it as a footnote measured badly
+  // too - the first run's top suggestion was a 5+ year role in Adelaide,
+  // Australia, ranked above a California role the candidate could plausibly
+  // do. Stated explicitly so the score reflects whether someone can
+  // actually take the job, while an exceptional distant role can still
+  // surface rather than being hidden outright.
+  const locationBlock = acceptableLocations.length
+    ? `\n\nThe candidate is based in, or willing to work from: ${acceptableLocations.join(", ")}.\n` +
+      `Weigh location as part of the score, not as a footnote:\n` +
+      `- A role they can do from where they are - fully remote, or in one of those locations - should outrank an otherwise equivalent role that would require relocation.\n` +
+      `- A role requiring relocation to another country is a substantial practical barrier. Reflect that in the number, not only in the reasoning.\n` +
+      `- Do not reduce a score to zero on location alone: an outstanding fit elsewhere should still appear, just below a comparable one they can actually take.\n` +
+      `- Judge from the description, which is what states the real policy. A posting labelled "Remote" that then requires hybrid on-site work is not remote.`
+    : "";
   const postingsBlock = candidates
     .map(
       (c, i) =>
@@ -165,7 +182,7 @@ export async function rankJobs(
     messages: [
       {
         role: "user",
-        content: `Here is a candidate's resume:\n\n${resumeText}\n\nHere are ${candidates.length} job postings the candidate might apply to:\n\n${postingsBlock}\n\nScore each posting on how well it fits the candidate's background, skills, and experience level. Be honest about mismatches (e.g. wrong seniority, wrong domain).`,
+        content: `Here is a candidate's resume:\n\n${resumeText}\n\nHere are ${candidates.length} job postings the candidate might apply to:\n\n${postingsBlock}\n\nScore each posting on how well it fits the candidate's background, skills, and experience level. Be honest about mismatches (e.g. wrong seniority, wrong domain).${locationBlock}`,
       },
     ],
   });

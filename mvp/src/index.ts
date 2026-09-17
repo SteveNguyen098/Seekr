@@ -327,7 +327,7 @@ try {
     }
 
     console.log(`\nAsking Claude to rank ${candidates.length} candidate posting(s) against the resume...`);
-    const ranked = await rankJobs(anthropic, resume.text, candidates);
+    const ranked = await rankJobs(anthropic, resume.text, candidates, criteria.acceptableLocations ?? []);
     for (const r of ranked) {
       console.log(`  [${r.score.toFixed(0)}] ${r.job.title} (${r.job.location}) - ${r.reasoning}`);
     }
@@ -336,8 +336,14 @@ try {
     // person picks. Everything above was already computed on the way to
     // choosing one posting - this stops throwing the rest away.
     if (args["suggest"] === "true") {
+      // Every posting that was read, best first - NOT only those clearing
+      // minMatchScore. That threshold exists to decide whether to auto-fill
+      // one application; as a cutoff for a suggestion list it hides the
+      // work and can leave nothing on screen at all. Measured: once
+      // location was weighed into the score, the whole list fell below 45
+      // and a genuinely reasonable shortlist rendered as zero suggestions.
+      // The score and the bar are both shown instead, and the person picks.
       const suggestions = ranked
-        .filter((r) => r.score >= minMatchScore)
         .map((r) => ({
           title: r.job.title,
           url: r.job.url,
@@ -350,16 +356,22 @@ try {
             !!r.job.location.trim() &&
             !!criteria.acceptableLocations?.length &&
             !criteria.acceptableLocations.some((l) => r.job.location.toLowerCase().includes(l.toLowerCase())),
+          meetsBar: r.score >= minMatchScore,
         }));
 
-      console.log(`\n${suggestions.length} suggestion(s) at or above the minimum score of ${minMatchScore}:`);
+      const overBar = suggestions.filter((s) => s.meetsBar).length;
+      console.log(
+        `\n${suggestions.length} posting(s) read in full, best first` +
+          ` - ${overBar} at or above your minimum score of ${minMatchScore}:`
+      );
       for (const s of suggestions) {
-        console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${s.offLocation ? "  ! outside your preferred locations" : ""}`);
+        const flags = `${s.meetsBar ? "" : "  (below your score bar)"}${s.offLocation ? "  ! outside your preferred locations" : ""}`;
+        console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${flags}`);
         console.log(`        ${s.reasoning}`);
         console.log(`        ${s.url}`);
       }
-      if (suggestions.length === 0) {
-        console.log(`  (${ranked.length} were read in full, none scored ${minMatchScore} or above)`);
+      if (overBar === 0 && suggestions.length > 0) {
+        console.log(`\n  Nothing cleared ${minMatchScore}. The list above is still ordered best-first - worth a look before moving to another board.`);
       }
       if (args["json-out"]) {
         await writeFile(path.resolve(args["json-out"]), JSON.stringify({ board: careerUrl, scanned: allJobs.length, opened: candidates.length, suggestions }, null, 2));
