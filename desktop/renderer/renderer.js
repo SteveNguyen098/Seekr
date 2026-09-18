@@ -150,7 +150,13 @@ function renderSuggestions(payload) {
     `${s.length} ranked best-first, ${overBar} clearing your score bar. ` +
     `Scores are a judgement call, not a measurement — read the reasoning before queueing anything.`;
 
-  for (const job of s) {
+  list.appendChild(suggestionList(s));
+}
+
+/** Shared by the board-scan panel and a queued link that turned out to be a board. */
+function suggestionList(jobs) {
+  const wrap = document.createElement("div");
+  for (const job of jobs) {
     const row = document.createElement("div");
     row.className = "suggestRow" + (job.meetsBar ? " meetsBar" : "");
 
@@ -182,8 +188,9 @@ function renderSuggestions(payload) {
     act.append(add, note);
 
     row.append(score, body, act);
-    list.appendChild(row);
+    wrap.appendChild(row);
   }
+  return wrap;
 }
 
 window.seekr.on("scan-output", ({ text }) => appendLog(text));
@@ -391,6 +398,25 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 function renderReport(r, { index, status, url }) {
   const card = document.createElement("section");
   card.className = "results";
+
+  // A queued link that turned out to be a job BOARD comes back as a
+  // shortlist, not a filled application. It has no filled/skipped columns
+  // and nothing was left for anyone to finish, so none of the application
+  // furniture below applies - including the "needs you" banner, which was
+  // firing here purely because there was no application report to read.
+  if (r && Array.isArray(r.suggestions)) {
+    const head = document.createElement("div");
+    head.className = "job";
+    head.innerHTML =
+      `<div class="title"><span class="pill">${index + 1} of ${queueTotal}</span> ` +
+      `Job board<span class="tag ai">${r.suggestions.length} suggestion${r.suggestions.length === 1 ? "" : "s"}</span></div>` +
+      `<div class="meta">${esc(url)}</div>` +
+      `<div class="meta">${r.scanned} postings scanned · ${r.opened} read in full. Nothing was filled in — pick the ones worth applying to.</div>`;
+    card.appendChild(head);
+    card.appendChild(suggestionList(r.suggestions));
+    $("results").appendChild(card);
+    return;
+  }
 
   // Some steps Seekr deliberately will not take on someone's behalf: a
   // legal attestation (Axon's firearms questionnaire), an account wall, a

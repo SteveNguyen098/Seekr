@@ -113,7 +113,7 @@ const outDir = path.resolve(args["out"] || "./out");
 // beyond the first handful buys nothing. Suggestion mode wants the whole
 // shortlist read, or the last few triaged postings are silently never
 // opened - measured on a 193-job board that shortlisted 10 and inspected 8.
-const MAX_CANDIDATES_TO_INSPECT = args["suggest"] === "true" ? MAX_SHORTLIST : 8;
+const MAX_CANDIDATES_TO_INSPECT = args["suggest"] === "true" || args["url"] ? MAX_SHORTLIST : 8;
 
 let fileCriteria: CriteriaFile = {};
 if (args["criteria"]) {
@@ -139,6 +139,9 @@ const criteria: Criteria = {
     : fileCriteria.acceptableLocations,
 };
 const minMatchScore = args["min-score"] ? Number(args["min-score"]) : (fileCriteria.minMatchScore ?? 0);
+// Set when --url turns out to point at a board (see the classify branch):
+// that is a request to find work, not to apply to whatever ranks first.
+let suggestFromAmbiguousBoard = false;
 
 await mkdir(outDir, { recursive: true });
 
@@ -290,7 +293,23 @@ try {
     }
     console.log(`  -> ${verdict.kind === "job" ? "a single job posting" : "a careers/listings page"} (${verdict.reason})`);
     if (verdict.kind === "job") jobUrl = ambiguousUrl;
-    else careerUrl = ambiguousUrl;
+    else {
+      careerUrl = ambiguousUrl;
+      // A board handed over WITHOUT the caller saying which kind of link it
+      // was is a request to find work, not an instruction to apply to
+      // whatever happens to rank first. Someone pasting a careers page has
+      // not seen any of those jobs yet, so auto-filling one of them is a
+      // decision they never made.
+      //
+      // It also removes a dead end: the old path picked the top posting,
+      // found it below the score bar and stopped with "no posting was a
+      // strong enough fit", having already read and ranked everything it
+      // needed to show a useful list.
+      //
+      // --career-url is unaffected - asking for that explicitly still means
+      // "find the best one and fill it in".
+      suggestFromAmbiguousBoard = true;
+    }
   }
 
   let best: { job: CandidateJob; score: number; reasoning: string };
@@ -322,7 +341,7 @@ try {
     // board returns the same list until a refresh is asked for explicitly,
     // which is also the honest behaviour: nothing about the board changed,
     // so the recommendation should not change either.
-    const suggestMode = args["suggest"] === "true";
+    const suggestMode = args["suggest"] === "true" || suggestFromAmbiguousBoard;
     const pinKey = createHash("sha256")
       .update(JSON.stringify({ board: careerUrl, titles: allJobs.map((j) => j.url).sort(), resume: resume.text, criteria, minMatchScore }))
       .digest("hex")
@@ -392,7 +411,7 @@ try {
     // Suggestion mode: the whole ranked list is the deliverable, and the
     // person picks. Everything above was already computed on the way to
     // choosing one posting - this stops throwing the rest away.
-    if (args["suggest"] === "true") {
+    if (suggestMode) {
       // Every posting that was read, best first - NOT only those clearing
       // minMatchScore. That threshold exists to decide whether to auto-fill
       // one application; as a cutoff for a suggestion list it hides the
