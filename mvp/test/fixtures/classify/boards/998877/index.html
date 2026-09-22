@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+Guards the direction that broke first.
+
+The self-link fix started out as "ignore any link that is a sub-path of
+this page's url". That is wrong, and it took board detection down with it:
+on a Greenhouse board EVERY posting is a sub-path of the board's own url,
+so all 50 of them vanished and a board classified as "unknown".
+
+The rule keys on the posting ID instead. This board's url carries an id of
+its own, which is the case most likely to make an id-based rule
+over-exclude - the postings below all carry DIFFERENT ids and must still
+be counted.
+
+No apply wording on purpose: this stays a board on its link count, not by
+failing some other test.
+-->
+<html><head><meta charset="utf-8"><title>Open roles</title></head>
+<body>
+  <h1>Open roles</h1>
+  <a href="../700001/index.html">Engineer 1</a>
+  <a href="../700002/index.html">Engineer 2</a>
+  <a href="../700003/index.html">Engineer 3</a>
+  <a href="../700004/index.html">Engineer 4</a>
+  <a href="../700005/index.html">Engineer 5</a>
+  <a href="../700006/index.html">Engineer 6</a>
+</body></html>

@@ -325,6 +325,48 @@ const MUTATIONS = [
     to: '  url.searchParams.append("page", String(pageNum));',
   },
   {
+    // The bug that shipped: an Ashby posting counted its own url and its
+    // own Apply button as two sibling jobs and classified as a board.
+    bug: "count a link back to this same posting as a sibling job",
+    source: "scrape",
+    spec: "classify",
+    // The two-link fixture next door cannot catch this: it stays under the
+    // >= 5 threshold and the opaque-id rule rescues it. This one has six.
+    fixture: "7c1e4a90",
+    from: "          if (hereId && href.includes(hereId)) return false;",
+    to: "",
+  },
+  {
+    // The over-exclusion direction. The first version of this rule keyed on
+    // "is a sub-path of this url" and took every posting on a
+    // Greenhouse-shaped board with it - caught live, not here: that shape
+    // needs a board url with no filename, which a file:// fixture cannot
+    // have. What IS reproducible is the same failure's mechanism - an
+    // id-bearing board url excluding postings that are not it.
+    bug: "drop every posting link once the board's own url carries an id",
+    source: "scrape",
+    spec: "classify",
+    fixture: "boards/998877",
+    from: "          if (hereId && href.includes(hereId)) return false;",
+    to: "          if (hereId) return false;",
+  },
+  {
+    bug: "stop treating an opaque id in the url as posting-shaped",
+    source: "scrape",
+    spec: "classify",
+    fixture: "ashby/5da60843-8dc5-4da2-a7b3-2dd37314f87f/index.html",
+    from: "  if (opaquePostingUrl && signals.hasApply && signals.textLength > 1200)",
+    to: "  if (false && opaquePostingUrl && signals.hasApply && signals.textLength > 1200)",
+  },
+  {
+    bug: "require prose on an application form page, so a bare apply form is unrecognisable",
+    source: "scrape",
+    spec: "classify",
+    fixture: "application",
+    from: "  if (opaquePostingUrl && signals.hasForm)",
+    to: "  if (opaquePostingUrl && signals.hasForm && signals.textLength > 1200)",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

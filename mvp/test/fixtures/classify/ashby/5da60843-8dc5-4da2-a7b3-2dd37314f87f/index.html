@@ -1,0 +1,29 @@
+<!doctype html>
+<!--
+BUG: a single Ashby posting was classified "board - found 2 job links".
+
+The two links were the posting's OWN url and its own "Apply for this Job"
+button, which on Ashby lives at <posting>/application. Both carry the
+posting's uuid, so both matched the opaque-id rule meant for spotting
+sibling postings - and a job advert was read as a listings page purely for
+linking to itself. The application was never opened, and the run reported
+no application present.
+
+Two things had to change and both are exercised here: a link carrying THIS
+page's posting id is not a sibling, and a url whose only identifier is an
+opaque id is still posting-shaped. Ashby's postings are /<company>/<uuid>,
+so the /jobs/ path test could never fire on them - the word "jobs" is in
+the HOSTNAME, jobs.ashbyhq.com, not the path.
+
+Directory named by a uuid on purpose: the rule keys on the url, so the
+fixture has to carry one where the classifier will look.
+-->
+<html><head><meta charset="utf-8"><title>Senior Technical Artist</title></head>
+<body>
+  <h1>Senior Technical Artist</h1>
+  <!-- self-link, as Ashby renders in its header -->
+  <a href="index.html">Senior Technical Artist</a>
+  <!-- the apply action: a sub-path of this same posting -->
+  <a href="application/index.html">Apply for this Job</a>
+  <p>HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. HoYoverse is looking for a Senior Technical Artist to join the team. </p>
+</body></html>

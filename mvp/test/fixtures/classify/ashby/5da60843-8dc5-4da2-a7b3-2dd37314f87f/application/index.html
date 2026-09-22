@@ -1,0 +1,22 @@
+<!doctype html>
+<!--
+The apply page, linked to directly.
+
+Measured on the real one: 852 characters of text, so the "full
+description" rule rejects it, and the button reads "Submit Application" -
+which does not contain "Apply", so the apply-word signal is false too. It
+failed every branch and classified as "unknown".
+
+Kept deliberately short. Padding it would destroy the very property that
+made it fail.
+-->
+<html><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+  <h1>Submit your application</h1>
+  <form>
+    <label>Resume <input type="file" name="resume"></label>
+    <label>Name <input type="text" name="name"></label>
+    <label>Email <input type="email" name="email"></label>
+    <button type="submit">Submit Application</button>
+  </form>
+</body></html>

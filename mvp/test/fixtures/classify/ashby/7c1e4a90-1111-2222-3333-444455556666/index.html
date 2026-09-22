@@ -1,0 +1,26 @@
+<!doctype html>
+<!--
+One posting that links to six of its OWN sub-pages.
+
+Distinct PATHS, not query strings: the link counter strips ?query before
+de-duplicating, so six "Apply" links differing only by ?src= collapse to
+one and never reach the threshold. That was the first version of this
+fixture and it stayed green under its own mutation.
+
+Every href below resolves under this posting's uuid directory, so each one
+carries the posting's id. Without the "a link carrying THIS posting's id
+is not a sibling" rule they count as six sibling jobs, trip the >= 5 board
+threshold, and a single advert classifies as a listings page - ahead of
+the opaque-id rule that rescues the smaller fixture next door.
+-->
+<html><head><meta charset="utf-8"><title>Gameplay Engineer</title></head>
+<body>
+  <h1>Gameplay Engineer</h1>
+  <a href="index.html">Gameplay Engineer</a>
+  <a href="application/index.html">Apply for this Job</a>
+  <a href="apply/index.html">Apply</a>
+  <a href="share/index.html">Share this role</a>
+  <a href="print/index.html">Print this role</a>
+  <a href="similar/index.html">Similar roles at this company</a>
+  <p>We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. We are hiring a Gameplay Engineer to build systems players love. </p>
+</body></html>

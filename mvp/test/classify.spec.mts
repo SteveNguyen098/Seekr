@@ -61,6 +61,32 @@ const CASES: Case[] = [
     expect: "board",
   },
   {
+    name: "Ashby posting that links only to itself and its own apply page",
+    guards: "a single posting read as a board because its own url and its own Apply button looked like two sibling jobs",
+    rel: "ashby/5da60843-8dc5-4da2-a7b3-2dd37314f87f/index.html",
+    expect: "job",
+    reasonMatches: /opaque posting id/i,
+  },
+  {
+    name: "the apply form itself, linked to directly",
+    guards: "a bare application form classified 'unknown' - too little prose for the description rule, and 'Submit Application' contains no 'Apply'",
+    rel: "ashby/5da60843-8dc5-4da2-a7b3-2dd37314f87f/application/index.html",
+    expect: "job",
+    reasonMatches: /application form/i,
+  },
+  {
+    name: "posting linking to itself six times",
+    guards: "the >= 5 board threshold being tripped by a posting's own repeated Apply and share links",
+    rel: "ashby/7c1e4a90-1111-2222-3333-444455556666/index.html",
+    expect: "job",
+  },
+  {
+    name: "board whose own url carries an id",
+    guards: "the id-based self-link rule over-excluding - the first version keyed on sub-paths and took every posting on a Greenhouse board with it",
+    rel: "boards/998877/index.html",
+    expect: "board",
+  },
+  {
     name: "board at a posting-shaped path, no redirect",
     guards: "the redirect half of the rule - a listing at /careers/<slug> is not a removed job",
     rel: "careers/engineering.html",
@@ -101,7 +127,7 @@ for (const c of CASES) {
   if (c.reasonMatches) {
     const reasonOk = c.reasonMatches.test(got!.reason);
     reasonOk ? passed++ : failed++;
-    console.log(reasonOk ? `    PASS  reason explains the redirect` : `    FAIL  reason did not match ${c.reasonMatches} — got "${got!.reason}"`);
+    console.log(reasonOk ? `    PASS  reason says why: ${got!.reason}` : `    FAIL  reason did not match ${c.reasonMatches} — got "${got!.reason}"`);
   }
 }
 

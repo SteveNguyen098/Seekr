@@ -194,12 +194,43 @@ export async function classifyUrl(
   // guards. Combined by max/OR rather than sum, so one posting rendered in
   // both a frame and its host can't be double-counted into looking like a
   // board.
+  // The URL the links are relative to. Passed in rather than read from
+  // location.href inside evaluate(), because collect() also runs in frames,
+  // where location.href is the frame's own URL and self-links would stop
+  // being recognisable as self-links.
+  const here = page.url().split(/[?#]/)[0].replace(/\/+$/, "");
+  // This page's own posting id, if it has one. A link carrying the SAME id
+  // is this posting again (its apply page, a canonical form); a link
+  // carrying a different one is a sibling. Null on a board URL, which names
+  // no single posting - and that is what keeps a board's postings counted.
+  const hereId =
+    here.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] ??
+    here.match(/\/(\d{6,})(?:\/|$)/)?.[1] ??
+    null;
+
   const collect = (ctx: Page | Frame) =>
     ctx
-      .evaluate((applyCtaSrc) => {
+      .evaluate(({ applyCtaSrc, here, hereId }) => {
         const links = Array.from(document.querySelectorAll("a[href]"));
         const postingLike = links.filter((a) => {
           const href = (a as HTMLAnchorElement).href;
+          // A link back to THIS posting is not a sibling job.
+          //
+          // THE BUG: an Ashby posting was classified "board - found 2 job
+          // links". The two links were the posting's own URL and its own
+          // "Apply for this Job" button, which lives at <posting>/application.
+          // Both match the opaque-id rule below, so a single job advert was
+          // read as a listings page purely for linking to itself, and the
+          // application was never opened.
+          //
+          // Matched on the posting ID, NOT on "is a sub-path of this URL" -
+          // that was the first attempt and it broke board detection
+          // outright, because on a Greenhouse board every posting is a
+          // sub-path of the board's own URL. hereId is null there, so
+          // nothing is excluded and the postings still count.
+          const bare = href.split(/[?#]/)[0].replace(/\/+$/, "");
+          if (bare === here) return false;
+          if (hereId && href.includes(hereId)) return false;
           // Path names the concept: /jobs/x, /careers/x, /vacancy/x ...
           if (/\/(jobs?|careers?|vacanc(y|ies)|positions?|openings?|postings?)\/[^/?#]{2,}/i.test(href)) return true;
           // ...or the link ends in an opaque posting id. Ashby uses
@@ -216,7 +247,7 @@ export async function classifyUrl(
           hasForm: !!document.querySelector("input[type=file], form input[type=email]"),
           textLength: text.length,
         };
-      }, APPLY_CTA_RE.source)
+      }, { applyCtaSrc: APPLY_CTA_RE.source, here, hereId })
       .catch(() => ({ postingLinks: 0, hasApply: false, hasForm: false, textLength: 0 }));
 
   const perFrame = await Promise.all([page, ...page.frames()].map(collect));
@@ -302,6 +333,42 @@ export async function classifyUrl(
     return deadPosting
       ? { kind: "gone", reason: `it redirected to ${landed}` }
       : { kind: "board", reason: `found ${signals.postingLinks} job links` };
+  // The same posting shape, for URLs that name no concept at all.
+  //
+  // askedForOnePosting above keys on a path segment like /jobs/ or
+  // /careers/. Ashby's postings are /<company>/<uuid> and the only "jobs"
+  // in the URL is the HOSTNAME, jobs.ashbyhq.com - so that test can never
+  // fire there and a real posting fell through to the link-count rules.
+  //
+  // The link-side filter already treats a trailing opaque id as
+  // posting-shaped; this applies the identical reasoning to the URL that
+  // was actually requested, which is the inconsistency that hid the bug.
+  //
+  // Deliberately placed AFTER the >= 5 board check, unlike its
+  // sibling rule: an opaque id is a weaker signal than a named path, so a
+  // board that happens to carry a UUID must still lose to a page that is
+  // plainly listing many jobs.
+  const opaquePostingUrl =
+    /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[/?#]|$)/i.test(url) ||
+    /\/\d{6,}(?:[/?#]|$)/.test(url);
+  if (opaquePostingUrl && signals.hasApply && signals.textLength > 1200)
+    return { kind: "job", reason: "an opaque posting id, an apply action and a full description" };
+
+  // The application form itself, linked to directly.
+  //
+  // Ashby's apply page lives at <posting>/application and is a bare form:
+  // measured at 852 characters of text, so the "full description" rule
+  // below rejects it, and its button reads "Submit Application" - which
+  // does not contain "Apply", so hasApply is false too. It failed every
+  // branch and came back "unknown".
+  //
+  // No prose requirement here, because a form page legitimately has none.
+  // The length test exists to stop a newsletter signup on a marketing page
+  // being read as a job; an opaque posting id in the URL is the independent
+  // signal that already rules that out.
+  if (opaquePostingUrl && signals.hasForm)
+    return { kind: "job", reason: "an opaque posting id and a real application form" };
+
   // A posting whose Apply lives behind a form rather than the word "Apply".
   if (signals.hasForm && signals.textLength > 1200)
     return { kind: "job", reason: "has an application form and a full description" };
