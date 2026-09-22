@@ -378,6 +378,27 @@ const MUTATIONS = [
     to: "    if (false) {",
   },
   {
+    // The bug that shipped, and the reason it looked intermittent: with a
+    // hardcoded seed the generic-degree fallback only worked when the very
+    // first, no-typing attempt matched. Measured live - the Degree dropdown
+    // shows 10 options untouched and 0 with "decline" typed into it.
+    bug: "type a hardcoded 'decline' into every search-driven dropdown",
+    spec: "labels",
+    fixture: "",
+    from: "  return candidate.source.replace(/\\\\./g, \" \").match(/[a-z]{3,}/i)?.[0] ?? \"\";",
+    to: '  return "decline";',
+  },
+  {
+    // The other direction: the EEOC decline option must keep searching for
+    // "decline", which is the FIRST word of its pattern, not the longest
+    // ("disclosed").
+    bug: "take the longest word of the pattern instead of the first",
+    spec: "labels",
+    fixture: "",
+    from: "  return candidate.source.replace(/\\\\./g, \" \").match(/[a-z]{3,}/i)?.[0] ?? \"\";",
+    to: '  return (candidate.source.replace(/\\\\./g, " ").match(/[a-z]{3,}/gi) ?? []).sort((a, b) => b.length - a.length)[0] ?? "";',
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

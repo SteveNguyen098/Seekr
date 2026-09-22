@@ -20,6 +20,7 @@ import {
   isSchoolLabel,
   isStandardRecruitmentConsent,
   isTickableAcknowledgement,
+  searchSeed,
   unbackedInstitution,
 } from "../src/apply.js";
 
@@ -156,6 +157,28 @@ const DEGREE_LABEL: Case[] = [
   { label: "Degree field of study", want: false, why: "names a degree but asks the subject" },
   { label: "Graduation date for this degree", want: false, why: "names a degree but asks a date" },
   { label: "What was your major degree subject?", want: false, why: "names a degree but asks the subject" },
+];
+
+// What gets TYPED into a search-driven dropdown when the candidate is a
+// pattern rather than a literal. This used to be the string "decline" for
+// every RegExp - correct for the EEOC decline option it was written
+// against, silently wrong for every pattern added since. Measured live:
+// the Degree dropdown shows 10 options untouched and ZERO with "decline"
+// typed into it, so a degree plainly on the list came back "no matching
+// option" whenever the menu was a beat slow and the retry ran.
+const DECLINE_RE_COPY =
+  /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want|consent|agree)|not disclosed|n\/a\b/i;
+
+const SEEDS: [string | RegExp, string, string][] = [
+  ["Bachelor's Degree", "Bachelor's Degree", "a literal candidate is typed as-is"],
+  [DECLINE_RE_COPY, "decline", "THE ONE THAT MUST NOT CHANGE: the EEOC decline option still searches for 'decline'"],
+  [/^(a\s+)?bachelor(['’]s)?(\s+degree)?\s*\*?$/i, "bachelor", "THE BUG: this used to type 'decline' and filter the list to nothing"],
+  [/^undergraduate(\s+degree)?\s*\*?$/i, "undergraduate", "plain word"],
+  [/^(a\s+)?master(['’]s)?(\s+degree)?\s*\*?$/i, "master", "the leading one-letter group is skipped"],
+  [/^(an\s+)?associate(['’]s)?(\s+degree)?\s*\*?$/i, "associate", "two-letter group skipped too"],
+  [/^ged\s*\*?$/i, "ged", "exactly three letters still counts"],
+  [/^\s*$/, "", "nothing typeable - the caller must skip rather than type junk"],
+  [/\d{4}/, "", "escape sequences are not literal text - \\d must not become 'd'"],
 ];
 
 // Consent labels that SHOULD be auto-acknowledged vs left for the human.
@@ -343,6 +366,15 @@ for (const c of DEGREE) {
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(c.value).padEnd(38)} -> ${String(got)}`);
   if (!ok) console.log(`        expected ${String(c.want)} - ${c.why}`);
+}
+
+console.log("\nsearchSeed");
+for (const [candidate, want, why] of SEEDS) {
+  const got = searchSeed(candidate);
+  const ok = got === want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(got).padEnd(16)} <- ${String(candidate).slice(0, 46)}`);
+  if (!ok) console.log(`        expected ${JSON.stringify(want)} - ${why}`);
 }
 
 console.log("\nisTickableAcknowledgement");

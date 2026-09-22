@@ -1408,6 +1408,35 @@ async function getListboxOptions(ctx: FormContext, selector: string) {
   return ctx.$$(scopedSelector).catch(() => []);
 }
 
+/**
+ * A plain-text term to type into a search-driven dropdown for a candidate.
+ *
+ * THE BUG: this used to be the literal string "decline" for every RegExp
+ * candidate. That was right for the one call site it was written against -
+ * the EEOC decline option, whose pattern starts with the word "decline" -
+ * and silently wrong for every RegExp added since.
+ *
+ * Measured on a live RIVA Solutions posting: the Degree dropdown shows 10
+ * options when untouched, and ZERO once "decline" is typed into it,
+ * because react-select filters its menu by whatever the input contains. So
+ * the generic-degree fallback could only ever work if the FIRST, no-typing
+ * attempt matched; whenever the menu was a beat slow to render, the retry
+ * typed "decline", filtered the list to nothing, and reported "could not
+ * find a matching option" for a degree that was plainly on the list.
+ * Intermittent by nature, which is exactly how it was reported - the same
+ * dropdown filled correctly on other postings at the same company.
+ *
+ * Takes the first real word of the pattern rather than the longest:
+ * DECLINE_RE's longest word is "disclosed", its first is "decline", and
+ * the first is the one that actually finds the option.
+ */
+export function searchSeed(candidate: string | RegExp): string {
+  if (typeof candidate === "string") return candidate;
+  // Escape sequences first, so the "s" of \s and the "d" of \d are never
+  // mistaken for literal text.
+  return candidate.source.replace(/\\./g, " ").match(/[a-z]{3,}/i)?.[0] ?? "";
+}
+
 function optionTextMatches(text: string, candidate: string | RegExp): boolean {
   if (typeof candidate !== "string") return candidate.test(text);
   const t = text.toLowerCase();
@@ -1837,7 +1866,10 @@ export async function selectComboboxOption(
   // Search-driven autocompletes (e.g. a city/address lookup) only populate
   // options once something is typed - try typing each candidate in turn.
   for (const candidate of candidates) {
-    const seed = typeof candidate === "string" ? candidate : "decline";
+    const seed = searchSeed(candidate);
+    // Nothing useful to type: typing a wrong term is worse than not typing
+    // at all, because it filters a list that was already showing.
+    if (!seed) continue;
     await ctx.fill(selector, seed).catch(() => {});
     await delay(600);
     result = await tryMatch();
