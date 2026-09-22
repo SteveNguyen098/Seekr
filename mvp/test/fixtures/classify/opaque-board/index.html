@@ -1,0 +1,30 @@
+<!doctype html>
+<!--
+A board whose postings are named by opaque ids only.
+
+THE GAP: Ashby boards returned ZERO postings while classifyUrl correctly
+called them boards, so a pasted Ashby board scanned cleanly and reported
+nothing suitable - which reads as a verdict on the company rather than a
+scraper gap. Measured on HoYoverse: 19 links, 14 of them postings, 0
+matching the generic filter, because it wants the word job/position/opening
+in the href and Ashby's hrefs are /&lt;company&gt;/&lt;uuid&gt;.
+
+Reproduced by SHAPE, not by hostname - which is also why the fix is keyed
+that way. Nothing here says "ashby" anywhere, and the fallback still has to
+find these four.
+
+The department is deliberately first on the details line and the location
+second, matching every posting measured on the real board: taking the whole
+line as the location would drag the department into location matching.
+
+The "About us" link at the bottom carries no id and must not be picked up.
+-->
+<html><head><meta charset="utf-8"><title>Open roles</title></head>
+<body>
+  <h1>Open roles</h1>
+  <a href="2bcf6272-0ef7-458f-bc0c-f43610f32eb9/index.html"><div><h3>Senior Audio Designer</h3><div><p>Art &amp; Audio &#8226; Los Angeles &#8226; Full time &#8226; On-site</p></div></div></a>
+  <a href="eec51e80-a175-46ec-b601-122fa01bffc9/index.html"><div><h3>Senior Player Support Specialist</h3><div><p>Business Operations &#8226; Singapore &#8226; Full time &#8226; On-site</p></div></div></a>
+  <a href="14100599-5472-427c-a11b-0b3752f69005/index.html"><div><h3>Game Operations Coordinator</h3><div><p>Business Operations &#8226; Singapore &#8226; Full time &#8226; On-site</p></div></div></a>
+  <a href="db21e531-e3b1-4d5a-b1a6-3b391f69ab28/index.html"><div><h3>Associate User Researcher</h3><div><p>Research &#8226; Los Angeles &#8226; Full time &#8226; On-site</p></div></div></a>
+  <a href="../board.html">About us</a>
+</body></html>

@@ -133,6 +133,52 @@ async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPostin
         .map((el) => ({ title: el.textContent?.trim() ?? "", href: (el as HTMLAnchorElement).href }))
         .filter((j) => /\/(job|jobs|position|positions|opening|openings|careers)\/[\w-]+/i.test(j.href))
     );
+    // Nothing matched, but the page may still list postings behind opaque
+    // ids that name no concept at all.
+    //
+    // THE GAP: an Ashby board returned ZERO postings while classifyUrl
+    // correctly called it a board - so a pasted Ashby board scanned
+    // cleanly and reported nothing suitable, which reads as a verdict on
+    // the company rather than a scraper gap. Measured on HoYoverse: 19
+    // links, 14 of them postings, 0 matching the filter above, because it
+    // wants the word job/position/opening in the href and Ashby's are
+    // /<company>/<uuid>.
+    //
+    // A fallback keyed on link SHAPE rather than on the hostname: it costs
+    // nothing on a board the filter above already handled (it only runs
+    // when that found nothing), covers any ATS using opaque ids rather
+    // than just this one, and can be exercised offline - a hostname test
+    // could only ever be checked against the live site.
+    if (raw.length === 0) {
+      const parsed = await page.$$eval("a[href]", (els) =>
+        els
+          .filter((el) =>
+            /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[/?#]|$)/i.test((el as HTMLAnchorElement).href)
+          )
+          .map((el) => {
+            const full = (el.textContent || "").replace(/\s+/g, " ").trim();
+            // Structure, not class names: Ashby's are build-hashed
+            // (_title_1dvh9_382) and would break on their next deploy.
+            const title = el.querySelector("h3")?.textContent?.replace(/\s+/g, " ").trim() || full;
+            // The rest of the card is a "bullet"-separated line - measured as
+            // department, location, commitment, workplace across all 14
+            // postings on that board. Taking the whole line as the location
+            // would drag the department into location matching.
+            const rest = full.startsWith(title) ? full.slice(title.length).trim() : "";
+            const parts = rest.split("•").map((x) => x.trim()).filter(Boolean);
+            const location = parts.length >= 2 ? parts[1] : parts[0] ?? "";
+            return { title, href: (el as HTMLAnchorElement).href, location };
+          })
+      );
+      const seenOpaque = new Set<string>();
+      const opaqueJobs: JobPosting[] = [];
+      for (const { title, href, location } of parsed) {
+        if (!title || title.length < 3 || seenOpaque.has(href)) continue;
+        seenOpaque.add(href);
+        opaqueJobs.push({ title, url: href, location });
+      }
+      if (opaqueJobs.length) return opaqueJobs;
+    }
   }
 
   const seen = new Set<string>();

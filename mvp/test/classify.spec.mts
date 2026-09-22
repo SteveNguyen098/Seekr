@@ -9,7 +9,7 @@
  *   npm run test:classify
  */
 import { chromium } from "playwright";
-import { boardPageUrl, classifyUrl } from "../src/scrape.js";
+import { boardPageUrl, classifyUrl, listJobs } from "../src/scrape.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -128,6 +128,28 @@ for (const c of CASES) {
     const reasonOk = c.reasonMatches.test(got!.reason);
     reasonOk ? passed++ : failed++;
     console.log(reasonOk ? `    PASS  reason says why: ${got!.reason}` : `    FAIL  reason did not match ${c.reasonMatches} — got "${got!.reason}"`);
+  }
+}
+
+// listJobs on a board whose postings are named by opaque ids only. Ashby's
+// shape, reproduced structurally - nothing here depends on the hostname,
+// which is also how the fix is keyed.
+{
+  console.log("\nlistJobs - opaque-id board");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const jobs = await listJobs(page, url("opaque-board/index.html"));
+  await page.close();
+
+  const checks: [string, boolean, string][] = [
+    ["all four postings found", jobs.length === 4, `got ${jobs.length}`],
+    ["titles come from the heading, not the whole card", jobs.every((j) => !/Full time/.test(j.title)), jobs[0]?.title ?? ""],
+    ["location is the second field, not the department", jobs[0]?.location === "Los Angeles", jobs[0]?.location ?? ""],
+    ["every posting has a location", jobs.every((j) => !!j.location.trim()), ""],
+    ["the id-less 'About us' link was not counted", jobs.every((j) => !/board\.html/.test(j.url)), ""],
+  ];
+  for (const [name, ok, detail] of checks) {
+    ok ? passed++ : failed++;
+    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${ok ? "" : ` — ${detail}`}`);
   }
 }
 

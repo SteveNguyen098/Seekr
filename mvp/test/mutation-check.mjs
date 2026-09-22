@@ -367,6 +367,17 @@ const MUTATIONS = [
     to: "  if (opaquePostingUrl && signals.hasForm && signals.textLength > 1200)",
   },
   {
+    // The gap this closes was silent in the worst way: classifyUrl said
+    // "board" correctly, listJobs then returned nothing, and the run
+    // reported the board as having no suitable jobs.
+    bug: "drop the opaque-id fallback, so a board naming its postings by uuid lists nothing",
+    source: "scrape",
+    spec: "classify",
+    fixture: "opaque-board",
+    from: "    if (raw.length === 0) {",
+    to: "    if (false) {",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
