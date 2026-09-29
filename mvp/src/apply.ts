@@ -305,6 +305,28 @@ export function isDegreeLabel(labelLower: string): boolean {
   return /(^|[^a-z])degrees?([^a-z]|$)|highest level of (education|study)|(^|[^a-z])education level|level of education/i.test(labelLower);
 }
 
+/**
+ * True when a label asks for the SUBJECT studied, as opposed to the
+ * institution (isSchoolLabel) or the credential level (isDegreeLabel).
+ *
+ * "Major" is deliberately anchored rather than matched loosely: an
+ * application that asks "Describe a major accomplishment" or "What was your
+ * major contribution to that project?" is not asking for a field of study,
+ * and answering either with "Computer/Management Information Systems" would
+ * be nonsense sitting in a free-text box. The words that CAN appear loosely
+ * - discipline, concentration, field/course/area of study - are unambiguous
+ * on their own.
+ */
+export function isDisciplineLabel(labelLower: string): boolean {
+  // The other two education fields, and the dates beside them.
+  if (/degree|school|universit|college|gpa|graduation/i.test(labelLower)) return false;
+  return (
+    /(^|[^a-z])(discipline|concentration)([^a-z]|$)/i.test(labelLower) ||
+    /(field|course|area) of study/i.test(labelLower) ||
+    /^\s*(primary\s+|undergraduate\s+)?majors?\s*\*?\s*$/i.test(labelLower)
+  );
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -3024,6 +3046,27 @@ export async function fillCurrentPage(
         await setField(profile.degree);
       }
       continue;
+    }
+    // The subject studied, from the profile rather than the model. A live
+    // RIVA Solutions run answered this "Program Management" - the job's own
+    // title - while the resume plainly states the real one.
+    //
+    // Unlike school and degree this one FALLS THROUGH on a miss instead of
+    // skipping. Discipline lists are long and idiosyncratic (72 options on
+    // that RIVA form), so a profile wording that matches nothing is a real
+    // possibility, and the model picking the closest option from a list it
+    // can see beats leaving the field empty. It only ever gets that chance
+    // when the deterministic answer could not be placed.
+    if (isDisciplineLabel(labelLower) && profile.discipline) {
+      if (!field.isCombobox) {
+        await setField(profile.discipline);
+        continue;
+      }
+      const picked = await selectComboboxOption(formCtx, field.selector, [profile.discipline]);
+      if (picked) {
+        filled.push({ label: field.label, value: picked });
+        continue;
+      }
     }
     if ((labelLower === "state" || labelLower.includes("state/province") || labelLower.includes("state or province")) && profile.state) {
       await setField(profile.state);

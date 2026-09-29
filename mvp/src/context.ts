@@ -29,6 +29,15 @@ export interface UserProfile {
    * at fill time, where the real options are known.
    */
   degree?: string;
+  /**
+   * The field of study for an education section's "Discipline" / "Major"
+   * field, written as the resume states it.
+   *
+   * Last of the three education facts to stop being generated. A live run
+   * answered this with "Program Management" - the job's own title - rather
+   * than the candidate's actual subject, which the resume states plainly.
+   */
+  discipline?: string;
 }
 
 export interface PersonalContext {
@@ -53,6 +62,8 @@ const PROFILE_KEYS: Record<string, keyof UserProfile> = {
   school: "school",
   university: "school",
   degree: "degree",
+  discipline: "discipline",
+  major: "discipline",
 };
 
 function parseProfile(text: string): UserProfile {

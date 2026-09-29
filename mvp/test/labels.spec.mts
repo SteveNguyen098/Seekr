@@ -17,6 +17,7 @@ import {
   genericDegreeOptions,
   isLocationLabel,
   isDegreeLabel,
+  isDisciplineLabel,
   isSchoolLabel,
   isStandardRecruitmentConsent,
   isTickableAcknowledgement,
@@ -181,6 +182,31 @@ const SEEDS: [string | RegExp, string, string][] = [
   [/\d{4}/, "", "escape sequences are not literal text - \\d must not become 'd'"],
 ];
 
+// The SUBJECT studied - the third and last education fact to stop being
+// generated. A live RIVA Solutions run answered it "Program Management",
+// the job's own title, while the resume states the real one plainly.
+const DISCIPLINE: Case[] = [
+  { label: "Discipline", want: true, why: "the RIVA field that was answered with the job title" },
+  { label: "Discipline*", want: true, why: "required marker" },
+  { label: "Field of study", want: true, why: "common wording" },
+  { label: "Course of study", want: true, why: "common wording" },
+  { label: "Area of Study", want: true, why: "common wording" },
+  { label: "Concentration", want: true, why: "common wording" },
+  { label: "Major", want: true, why: "bare label" },
+  { label: "Major/Discipline", want: true, why: "combined wording" },
+
+  { label: "Degree*", want: false, why: "the level, handled by isDegreeLabel" },
+  { label: "School*", want: false, why: "the institution, handled by isSchoolLabel" },
+  { label: "Graduation date", want: false, why: "a date in the same section" },
+
+  // "Major" is the word that can appear innocently, so it is anchored
+  // rather than matched loosely. Answering any of these with a field of
+  // study would put nonsense in a free-text box.
+  { label: "Describe a major accomplishment", want: false, why: "'major' as an adjective, not a field of study" },
+  { label: "What was your major contribution to that project?", want: false, why: "'major' as an adjective again" },
+  { label: "Major Achievements", want: false, why: "'major' as an adjective in a heading" },
+];
+
 // Consent labels that SHOULD be auto-acknowledged vs left for the human.
 const CONSENT: Case[] = [
   { label: "Privacy Notice Acknowledgement", want: true, why: "standard data-processing acknowledgement" },
@@ -330,18 +356,22 @@ const run = (name: string, cases: Case[], fn: (s: string) => boolean) => {
 run("isLocationLabel", LOCATION, isLocationLabel);
 run("isSchoolLabel", SCHOOL, isSchoolLabel);
 run("isDegreeLabel", DEGREE_LABEL, isDegreeLabel);
+run("isDisciplineLabel", DISCIPLINE, isDisciplineLabel);
 
 // Both live in the same education section, so a label claimed by both
 // would be answered by whichever branch the fill loop happens to reach
 // first - the kind of thing that only shows up on a real application.
 {
-  const both = [...SCHOOL, ...DEGREE_LABEL]
+  // All three sit in the same education section, so a label claimed by two
+  // of them would be answered by whichever branch the fill loop reached
+  // first - silently, and only visible on a real application.
+  const clash = [...SCHOOL, ...DEGREE_LABEL, ...DISCIPLINE]
     .map((c) => c.label)
-    .filter((l) => isSchoolLabel(l.toLowerCase()) && isDegreeLabel(l.toLowerCase()));
-  const ok = both.length === 0;
+    .filter((l) => [isSchoolLabel, isDegreeLabel, isDisciplineLabel].filter((f) => f(l.toLowerCase())).length > 1);
+  const ok = clash.length === 0;
   ok ? pass++ : fail++;
-  console.log(`\n  ${ok ? "PASS" : "FAIL"}  school and degree predicates never claim the same label`);
-  if (!ok) console.log(`        both claimed: ${both.join(", ")}`);
+  console.log(`\n  ${ok ? "PASS" : "FAIL"}  school, degree and discipline never claim the same label`);
+  if (!ok) console.log(`        claimed by more than one: ${clash.join(", ")}`);
 }
 // isStandardRecruitmentConsent is called with the ORIGINAL-case label in
 // apply.ts, so it is exercised that way here too.

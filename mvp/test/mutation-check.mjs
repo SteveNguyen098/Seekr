@@ -399,6 +399,23 @@ const MUTATIONS = [
     to: '  return (candidate.source.replace(/\\\\./g, " ").match(/[a-z]{3,}/gi) ?? []).sort((a, b) => b.length - a.length)[0] ?? "";',
   },
   {
+    // "major" is the one word here that appears innocently. Matched
+    // loosely, "Describe a major accomplishment" becomes a field-of-study
+    // question and gets answered with the candidate's degree subject.
+    bug: "match 'major' loosely, so 'a major accomplishment' asks for a field of study",
+    spec: "labels",
+    fixture: "",
+    from: "    /^\\s*(primary\\s+|undergraduate\\s+)?majors?\\s*\\*?\\s*$/i.test(labelLower)",
+    to: "    /major/i.test(labelLower)",
+  },
+  {
+    bug: "drop the education exclusions, so Degree and School are also claimed as the subject",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/degree|school|universit|college|gpa|graduation/i.test(labelLower)) return false;\n  return (\n    /(^|[^a-z])(discipline|concentration)([^a-z]|$)/i.test(labelLower) ||",
+    to: "  return (\n    /(^|[^a-z])(discipline|concentration)([^a-z]|$)/i.test(labelLower) ||\n    /degree|school/i.test(labelLower) ||",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
