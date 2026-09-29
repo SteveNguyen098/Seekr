@@ -224,7 +224,7 @@ async function openBrowser() {
         // No viewport is set here on purpose: a tab shares the host
         // window's dimensions, and forcing one would resize that window
         // out from under every other tab already open in it.
-        return { context: ctx, page: await ctx.newPage(), attached: true };
+        return { context: ctx, page: await ctx.newPage(), attached: true, ownedBrowser: null };
       }
       // Connected but no context to put a tab in - unusable, so fall
       // through and host our own rather than proceeding half-attached.
@@ -237,20 +237,49 @@ async function openBrowser() {
   // attach *cannot* use the host's directory even if it wanted to, because
   // that lock is exactly what it just failed to get past.
   if (cdpPort) launchArgs.push(`--remote-debugging-port=${cdpPort}`);
-  const ctx = useProfile
-    ? await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 }, args: launchArgs })
-    : await (await chromium.launch({ headless: !headed, args: launchArgs })).newContext({ viewport: { width: 1280, height: 900 } });
-  return { context: ctx, page: ctx.pages()[0] ?? (await ctx.newPage()), attached: false };
+  if (useProfile) {
+    // A persistent context OWNS its browser: closing the context closes the
+    // process too, so there is nothing else to hold on to.
+    const ctx = await chromium.launchPersistentContext(profileDir, { headless: !headed, viewport: { width: 1280, height: 900 }, args: launchArgs });
+    return { context: ctx, page: ctx.pages()[0] ?? (await ctx.newPage()), attached: false, ownedBrowser: null };
+  }
+  // A plain launch does NOT. This used to read
+  //   (await chromium.launch(...)).newContext(...)
+  // which threw the Browser away and kept only the context - so closing the
+  // context left the Chromium process running, and with it four pipes and a
+  // ProcessWrap holding the Node event loop open. The run finished all its
+  // work, wrote its report and screenshot, printed its last line, and then
+  // sat there until something killed it.
+  //
+  // Measured directly: context.close() returns in ~114ms and leaves
+  // ["PipeWrap","PipeWrap","PipeWrap","PipeWrap","ProcessWrap"] behind,
+  // while the persistent path above leaves none. That difference is why
+  // only --no-profile runs hung, and why the desktop shell - which always
+  // passes --profile - never saw it.
+  const launched = await chromium.launch({ headless: !headed, args: launchArgs });
+  const ctx = await launched.newContext({ viewport: { width: 1280, height: 900 } });
+  return { context: ctx, page: ctx.pages()[0] ?? (await ctx.newPage()), attached: false, ownedBrowser: launched };
 }
 
-const { context, page, attached } = await openBrowser();
+const { context, page, attached, ownedBrowser } = await openBrowser();
 if (attached) console.log(`  -> attached to the shared browser on port ${cdpPort} (new tab, using its profile)`);
 else if (useProfile) console.log(`  -> browser profile: ${profileDir} (verifications persist between runs)${cdpPort ? `, hosting the shared browser on port ${cdpPort}` : ""}`);
 
 // Closing the context also closes its browser - which for an attached tab
 // would take down the host and every other link's tab with it. An attached
 // run therefore closes only its own page.
-const browser = { close: attached ? async () => void (await page.close().catch(() => {})) : () => context.close() };
+// Three shapes, three teardowns. An ATTACHED run borrows a browser someone
+// else is hosting and must only close its own tab. A PERSISTENT context owns
+// its browser and closing it is enough. A plain launch owns a Browser that
+// has to be closed explicitly, or the process outlives the run.
+const browser = {
+  close: attached
+    ? async () => void (await page.close().catch(() => {}))
+    : async () => {
+        await context.close().catch(() => {});
+        if (ownedBrowser) await ownedBrowser.close().catch(() => {});
+      },
+};
 
 /**
  * Ends a run that cannot continue, capturing the page as it stands first.
