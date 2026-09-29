@@ -14,6 +14,7 @@
  *   npm run test:labels
  */
 import {
+  DECLINE_RE,
   genericDegreeOptions,
   isLocationLabel,
   isDegreeLabel,
@@ -396,6 +397,37 @@ for (const c of DEGREE) {
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(c.value).padEnd(38)} -> ${String(got)}`);
   if (!ok) console.log(`        expected ${String(c.want)} - ${c.why}`);
+}
+
+// Which OPTION counts as declining a demographic question. A live LTS
+// posting offers ["Man", "Woman", "Not Specified"] - "Not Specified" is the
+// same answer as "decline to self-identify", worded as a state rather than
+// a refusal, and without it a REQUIRED demographic question was left for
+// the candidate, which is the one outcome that path exists to avoid.
+console.log("\nDECLINE_RE - which options count as declining");
+const DECLINE_OPTIONS: [string, boolean, string][] = [
+  ["Not Specified", true, "THE BUG: the LTS gender question's only non-answer"],
+  ["Unspecified", true, "same thing, one word"],
+  ["Not listed", true, "another common wording"],
+  ["Decline To Self Identify", true, "the classic phrasing still works"],
+  ["Prefer not to say", true, "and this one"],
+  ["I don't wish to answer", true, "and this one"],
+
+  // Real answers must never be mistaken for a decline - picking one of
+  // these would assert something about the candidate they never said.
+  ["Man", false, "a real answer"],
+  ["Woman", false, "a real answer"],
+  ["Non-binary", false, "a real answer"],
+  ["Hispanic or Latino", false, "a real answer"],
+  ["Yes", false, "not a decline"],
+  ["No", false, "not a decline - the SMS opt-out is matched separately, by its own pattern"],
+];
+for (const [option, want, why] of DECLINE_OPTIONS) {
+  const got = DECLINE_RE.test(option);
+  const ok = got === want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  declines=${String(got).padEnd(5)} ${JSON.stringify(option)}`);
+  if (!ok) console.log(`        expected ${want} - ${why}`);
 }
 
 console.log("\nsearchSeed");

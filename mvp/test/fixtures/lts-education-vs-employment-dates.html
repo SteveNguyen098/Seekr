@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+BUG: an education section's dates were answered with a JOB's dates.
+
+Confirmed live on an LTS posting: "Start date month/year" and "End date
+month/year" came back December 2024 - April 2025 for a degree finished in
+2023. The labels say nothing about education, so the model had no way to
+know which start date was being asked for, and picked an employment one.
+
+Greenhouse marks the section in its own markup - the container class is
+"education--date-container" - which is the only thing distinguishing these
+four controls from the identically labelled ones in an employment block.
+
+The employment block below is the half that matters most. Its labels are
+character-for-character identical to the education ones, and it must NOT
+be flagged, or the fix simply moves the wrong answer from one section to
+the other.
+
+The "Highest education level" field is a third case: inside the education
+container, but not a date, so the date rule must leave it alone.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LTS - education vs employment dates</title>
+  </head>
+  <body>
+    <div class="education--container">
+      <label for="edu_school">School</label>
+      <input type="text" id="edu_school" name="edu_school" />
+
+      <label for="edu_level">Highest education level</label>
+      <input type="text" id="edu_level" name="edu_level" />
+
+      <div class="education--date-container">
+        <label for="edu_start_month">Start date month</label>
+        <input type="text" id="edu_start_month" name="edu_start_month" />
+        <label for="edu_start_year">Start date year</label>
+        <input type="number" id="edu_start_year" name="edu_start_year" required />
+        <label for="edu_end_month">End date month</label>
+        <input type="text" id="edu_end_month" name="edu_end_month" />
+        <label for="edu_end_year">End date year</label>
+        <input type="number" id="edu_end_year" name="edu_end_year" required />
+      </div>
+    </div>
+
+    <!-- Same labels, different section. Must stay unflagged. -->
+    <div class="employment--container">
+      <label for="job_title">Job title</label>
+      <input type="text" id="job_title" name="job_title" />
+
+      <div class="employment--date-container">
+        <label for="job_start_month">Start date month</label>
+        <input type="text" id="job_start_month" name="job_start_month" />
+        <label for="job_start_year">Start date year</label>
+        <input type="number" id="job_start_year" name="job_start_year" />
+        <label for="job_end_month">End date month</label>
+        <input type="text" id="job_end_month" name="job_end_month" />
+        <label for="job_end_year">End date year</label>
+        <input type="number" id="job_end_year" name="job_end_year" />
+      </div>
+    </div>
+  </body>
+</html>

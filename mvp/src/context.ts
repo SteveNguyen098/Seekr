@@ -38,6 +38,18 @@ export interface UserProfile {
    * than the candidate's actual subject, which the resume states plainly.
    */
   discipline?: string;
+  /**
+   * When the candidate started and finished their studies, as "August 2019"
+   * / "December 2023".
+   *
+   * Here rather than inferred, for two reasons. A live LTS run answered an
+   * education section's "Start date" with a JOB's dates. And even reading
+   * the section correctly would not have helped: the resume states a
+   * graduation date and no start date at all, so the start was never
+   * recoverable from it.
+   */
+  educationStart?: string;
+  educationEnd?: string;
 }
 
 export interface PersonalContext {
@@ -64,6 +76,8 @@ const PROFILE_KEYS: Record<string, keyof UserProfile> = {
   degree: "degree",
   discipline: "discipline",
   major: "discipline",
+  "education start": "educationStart",
+  "education end": "educationEnd",
 };
 
 function parseProfile(text: string): UserProfile {

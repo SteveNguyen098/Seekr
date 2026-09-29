@@ -105,6 +105,28 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "lts-education-vs-employment-dates.html",
+    bug: "an education section's dates were answered with a job's dates",
+    check(fields, t) {
+      const byId = (id: string) => fields.find((f) => f.idOrName.split(/\s+/).includes(id));
+      const eduDates = ["edu_start_month", "edu_start_year", "edu_end_month", "edu_end_year"].map(byId);
+      const jobDates = ["job_start_month", "job_start_year", "job_end_month", "job_end_year"].map(byId);
+
+      t.ok("all eight date controls discovered", [...eduDates, ...jobDates].every(Boolean));
+      t.ok("every education date is flagged", eduDates.every((f) => f?.inEducationSection === true));
+      // The half that matters most: identical labels, different section.
+      t.ok("no employment date is flagged", jobDates.every((f) => f?.inEducationSection === false));
+      t.ok(
+        "the labels really are identical across the two sections",
+        eduDates[0]?.label === jobDates[0]?.label && eduDates[0]?.label === "Start date month"
+      );
+      // Inside the education container but not a date - the date rule must
+      // not claim it, and the flag alone must not be taken as permission.
+      t.is("a non-date education field is still flagged", byId("edu_level")?.inEducationSection, true);
+      t.is("and keeps its own label", byId("edu_level")?.label, "Highest education level");
+    },
+  },
+  {
     file: "kforce-consent-panel.html",
     bug: "the cookie consent centre was mistaken for the application form",
     check(fields, t) {

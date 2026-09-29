@@ -416,6 +416,40 @@ const MUTATIONS = [
     to: "  return (\n    /(^|[^a-z])(discipline|concentration)([^a-z]|$)/i.test(labelLower) ||\n    /degree|school/i.test(labelLower) ||",
   },
   {
+    // The bug that shipped: a REQUIRED gender question whose only non-answer
+    // is "Not Specified" found no decline option and was left blank.
+    bug: "stop recognising 'Not Specified' as declining a demographic question",
+    spec: "labels",
+    fixture: "",
+    from: "not disclosed|not specified|unspecified|not listed|",
+    to: "not disclosed|",
+  },
+  {
+    // The dangerous direction: a decline pattern loose enough to match a
+    // real answer would ASSERT a demographic the candidate never gave.
+    bug: "widen the decline pattern until a real answer counts as declining",
+    spec: "labels",
+    fixture: "",
+    from: "not disclosed|not specified|unspecified|not listed|",
+    to: "not disclosed|not specified|unspecified|not listed|man|",
+  },
+  {
+    // The education dates were answered with a job's dates because nothing
+    // told them apart. Without the section flag they are indistinguishable.
+    bug: "stop reading the page's own education section markup",
+    fixture: "lts-education",
+    from: "const inEducationSection = !!el.closest('[class*=\"education\" i], [id*=\"education\" i]');",
+    to: "const inEducationSection = false;",
+  },
+  {
+    // The over-reach: flagging everything would move the wrong answer from
+    // the education block into the employment one instead of fixing it.
+    bug: "flag every field as education, including the employment dates",
+    fixture: "lts-education",
+    from: "const inEducationSection = !!el.closest('[class*=\"education\" i], [id*=\"education\" i]');",
+    to: "const inEducationSection = true;",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

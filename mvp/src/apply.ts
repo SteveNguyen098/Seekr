@@ -99,6 +99,16 @@ export interface DiscoveredField {
    */
   ownLabelWasAffirmation: boolean;
   /**
+   * The control sits inside a section the page itself marks as education.
+   *
+   * Greenhouse names the container "education--date-container", which is
+   * the only thing distinguishing "Start date month" in an education block
+   * from the identical label in an employment block. Without it a live LTS
+   * run answered the education dates with a job's dates - December 2024 to
+   * April 2025 for a degree finished in 2023.
+   */
+  inEducationSection: boolean;
+  /**
    * The raw `name` attribute, for ANY control type. Distinct from
    * `groupName`, which is deliberately radio-only. A checkbox group shares
    * one `name` the same way a radio group does - confirmed live on a
@@ -156,8 +166,14 @@ const AI_POLICY_RE = /\bAI\b.*(policy|tool|assist|usage|disclos)/i;
 // "I do not consent to disclose this information", and double as the
 // decline option for opt-in-style questions like SMS consent below), each
 // in "don't/doesn't/do not/does not" form.
-const DECLINE_RE =
-  /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want|consent|agree)|not disclosed|n\/a\b/i;
+// "not specified" / "unspecified" / "not listed" are the same answer as
+// "decline to self-identify", just worded as a state rather than a refusal.
+// Measured live on an LTS posting whose gender question offers exactly
+// ["Man", "Woman", "Not Specified"]: without them the decline hunt found
+// nothing and a REQUIRED demographic question was left for the candidate,
+// which is the one outcome this path exists to avoid.
+export const DECLINE_RE =
+  /decline|prefer not|choose not|(does\s*not|doesn't|don't|do\s*not)\s*(wish|want|consent|agree)|not disclosed|not specified|unspecified|not listed|n\/a\b/i;
 // Matches the radio/checkbox OPTION that opts out of receiving text
 // messages/SMS - paired with DECLINE_RE below so the same "no thanks"
 // phrasing detection doubles for both EEOC decline options and this.
@@ -1016,6 +1032,10 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // label is known to be uninformative - narrow on purpose, because a
         // checkbox GROUP's per-option labels ("Asian", "Hispanic") are
         // meaningful and must not be replaced by their shared legend.
+        // The page's own markup, not a proximity guess: Greenhouse wraps
+        // these in a container whose class names the section.
+        const inEducationSection = !!el.closest('[class*="education" i], [id*="education" i]');
+
         let ownLabelWasAffirmation = false;
         if (type === "checkbox" && /^(i\s+)?(acknowledge|acknowledged|agree|accept|consent|confirm|yes)[\s.:*-]*$/i.test(label.trim())) {
           const legend = el.closest("fieldset")?.querySelector(":scope > legend")?.textContent?.trim() || "";
@@ -1167,7 +1187,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
 
         const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, nameAttr: nameAttr || "" };
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "" };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -2901,6 +2921,26 @@ export async function fillCurrentPage(
       }
       continue;
     }
+    // SMS consent rendered as a dropdown rather than a radio pair.
+    //
+    // The two branches above cover radio groups and individual radios; an
+    // LTS posting asks the same question as a required combobox offering
+    // exactly ["Yes", "No"], so it fell past both into the generic
+    // consent skip and was reported as "left for you to complete".
+    //
+    // Only ever the opt-out, never the opt-in - declining marketing contact
+    // is the candidate's standing instruction, and it is the answer that
+    // cannot harm them if this reads the question wrong.
+    if ((field.isCombobox || field.tag === "SELECT") && TEXT_MESSAGE_RE.test(field.label)) {
+      const picked = await selectComboboxOption(formCtx, field.selector, [DECLINE_RE, /^\s*no\b/i]);
+      if (picked) {
+        filled.push({ label: field.label, value: picked });
+      } else {
+        skipped.push({ label: field.label, reason: "text-message consent - could not select the opt-out option, please decline manually", required: field.required });
+      }
+      continue;
+    }
+
     if (CONSENT_RE.test(labelLower)) {
       skipped.push({ label: field.label || field.selector, reason: "consent/legal field, left for you to complete", required: field.required });
       continue;
@@ -3065,6 +3105,31 @@ export async function fillCurrentPage(
       const picked = await selectComboboxOption(formCtx, field.selector, [profile.discipline]);
       if (picked) {
         filled.push({ label: field.label, value: picked });
+        continue;
+      }
+    }
+    // Education start/end dates, which Greenhouse splits into four
+    // separate month/year controls labelled only "Start date month",
+    // "Start date year" and so on.
+    //
+    // THE BUG: those labels say nothing about education, so a live LTS run
+    // answered them with a JOB's dates - December 2024 to April 2025 for a
+    // degree finished in 2023. Reading the section correctly would not have
+    // been enough either: the resume states a graduation date and no start
+    // date at all, so the start was never recoverable from it. Hence the
+    // profile.
+    //
+    // Gated on inEducationSection, which comes from the page's own markup
+    // rather than a proximity guess. An identically labelled date in an
+    // employment block is left alone and still goes to the model.
+    if (field.inEducationSection && /(start|end)\s*date\s*(month|year)/i.test(labelLower)) {
+      const raw = /start/i.test(labelLower) ? profile.educationStart : profile.educationEnd;
+      // "August 2019" -> month name and year, each going to its own control.
+      const month = raw?.match(/[a-z]+/i)?.[0] ?? "";
+      const year = raw?.match(/\d{4}/)?.[0] ?? "";
+      const value = /month/i.test(labelLower) ? month : year;
+      if (value) {
+        await setField(value);
         continue;
       }
     }
