@@ -338,6 +338,24 @@ const INSTITUTION: InstitutionCase[] = [
   // until the checker caught it.
   { label: "School*", value: "Institute", want: false, why: "no distinguishing word left after the generic ones" },
   { label: "School*", value: "", want: false, why: "empty is handled by the normal empty-answer path" },
+
+  // The guard only applies to fields asking for a NAME. A question that
+  // merely contains one of its trigger words is asking something about the
+  // candidate, and its answer is not an institution.
+  {
+    label: "Are you legally authorized to work for any United States Employer at the time of application?*",
+    value: "Yes",
+    want: false,
+    why: "THE BUG: contains 'Employer', so 'Yes' was checked as an employer name and a required question was left blank",
+  },
+  { label: "May we contact your current employer?", value: "Yes", want: false, why: "question, answer is yes/no" },
+  { label: "Did you attend this school?", value: "Yes", want: false, why: "same shape on the education side" },
+
+  // ...but a question that genuinely asks for a name is still guarded,
+  // which is the case the question-mark rule alone would miss.
+  { label: "What is the name of your most recent employer?", value: "Initech", want: true, why: "a question that does ask for a name" },
+  { label: "Employer name", value: "Initech", want: true, why: "noun phrase asking for a name" },
+  { label: "Most recent employer", value: "Initech", want: true, why: "an employer the resume never mentions" },
 ];
 
 let pass = 0;

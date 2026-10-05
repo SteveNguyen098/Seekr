@@ -1593,6 +1593,21 @@ const GENERIC_INSTITUTION_WORDS = new Set([
  */
 export function unbackedInstitution(label: string, value: string, resumeText: string): boolean {
   if (!/school|universit|college|institution|alma mater|employer/i.test(label)) return false;
+  // ...but only when the field is asking for a NAME.
+  //
+  // THE BUG: "Are you legally authorized to work for any United States
+  // Employer at the time of application?" contains the word "employer", so
+  // the answer "Yes" was checked against the resume as though it were an
+  // employer's name, found missing, and refused - leaving a required work
+  // authorization question blank on a live Alpha FMC posting.
+  //
+  // A question mark is the tell. A field asking for an institution is a
+  // noun phrase - "School", "Most recent employer" - while anything ending
+  // in "?" is asking something about the candidate, and its answer is not
+  // an institution name. The "name" exception keeps the guard on questions
+  // that genuinely do ask for one ("What is the name of your most recent
+  // employer?"), which is the case the question-mark rule alone would miss.
+  if (/\?/.test(label) && !/\bnames?\b/i.test(label)) return false;
   const candidate = value.trim();
   if (!candidate) return false;
 

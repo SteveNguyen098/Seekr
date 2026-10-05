@@ -450,6 +450,25 @@ const MUTATIONS = [
     to: "const inEducationSection = true;",
   },
   {
+    // The bug that shipped: the fabrication guard refusing "Yes" on a work
+    // authorization question, because the question contains the word
+    // "Employer". A required field was left blank on a live posting.
+    bug: "apply the institution guard to questions, not just name fields",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/\\?/.test(label) && !/\\bnames?\\b/i.test(label)) return false;",
+    to: "",
+  },
+  {
+    // The other direction: exempting every question would let a fabricated
+    // employer through on "What is the name of your most recent employer?".
+    bug: "exempt every question, including ones that do ask for a name",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/\\?/.test(label) && !/\\bnames?\\b/i.test(label)) return false;",
+    to: "  if (/\\?/.test(label)) return false;",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
