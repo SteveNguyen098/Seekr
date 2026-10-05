@@ -247,7 +247,13 @@ export function isLocationLabel(labelLower: string): boolean {
     // Bare/prefixed "Location" (confirmed live on Vanta), anchored so it
     // can't swallow "relocation" / "Are you open to relocation?", which has
     // its own qa_context answer and must go to Claude.
-    /^(current |preferred |your )?location$/.test(labelLower) ||
+    // Trailing required markers tolerated, the same accommodation
+    // isStandardRecruitmentConsent already makes. Measured on Lever:
+    // jobs.lever.co/ro labels this "Current location" and matched, while
+    // matchgroup and palantir label it "Current location ✱" and did not -
+    // so the same field was answered from the profile on one tenant and
+    // sent to the model on the next.
+    /^(current |preferred |your )?location[\s*∗✱⁎﹡＊]*$/.test(labelLower) ||
     WORK_LOCATION_RE.test(labelLower)
   );
 }

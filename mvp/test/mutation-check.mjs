@@ -493,6 +493,25 @@ const MUTATIONS = [
     to: "/\\*/.test(label)",
   },
   {
+    // The bug that shipped: the same Lever field was answered from the
+    // profile on one tenant and sent to the model on the next, purely
+    // because the second spelled its required marker into the label.
+    bug: "stop tolerating a trailing required marker on a location label",
+    spec: "labels",
+    fixture: "",
+    from: "    /^(current |preferred |your )?location[\\s*∗✱⁎﹡＊]*$/.test(labelLower) ||",
+    to: "    /^(current |preferred |your )?location$/.test(labelLower) ||",
+  },
+  {
+    // The other direction: a pattern loose enough to swallow trailing WORDS
+    // would claim "Are you open to relocation?" and the auth questions.
+    bug: "let the location pattern swallow any trailing text, not just markers",
+    spec: "labels",
+    fixture: "",
+    from: "    /^(current |preferred |your )?location[\\s*∗✱⁎﹡＊]*$/.test(labelLower) ||",
+    to: "    /^(current |preferred |your )?location.*$/.test(labelLower) ||",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

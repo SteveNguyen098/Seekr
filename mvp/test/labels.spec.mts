@@ -50,6 +50,21 @@ const LOCATION: Case[] = [
   { label: "Are you legally authorized to work in the location where this role is based?", want: false, why: "auth question phrased around location (Vanta)" },
   { label: "Are you open to relocation?", want: false, why: "'relocation' must not be swallowed - it has its own qa_context answer" },
   { label: "Do you require sponsorship to work in this country?", want: false, why: "sponsorship, not location" },
+
+  // A trailing required marker must not stop the field being recognised.
+  // Measured on Lever: jobs.lever.co/ro labels this "Current location" and
+  // matched, while matchgroup and palantir label it with a trailing heavy
+  // asterisk and did not - so the same field was answered from the profile
+  // on one tenant and sent to the model on the next.
+  { label: "Current location ✱", want: true, why: "THE BUG: Lever's U+2731 required marker broke the anchored pattern" },
+  { label: "Current location *", want: true, why: "the ASCII marker too" },
+  { label: "Preferred location*", want: true, why: "prefix plus marker" },
+
+  // ...but only MARKERS may trail it. These start with the word and are
+  // still not asking where the candidate lives - filling them with a home
+  // city would answer a different question entirely.
+  { label: "Locations of interest", want: false, why: "which offices they want, not where they are" },
+  { label: "Location preference for this role", want: false, why: "a preference, not a current address" },
 ];
 
 // The school NAME field, which is answered from the profile, vs the
