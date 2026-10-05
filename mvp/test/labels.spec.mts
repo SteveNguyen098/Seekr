@@ -18,6 +18,7 @@ import {
   genericDegreeOptions,
   isLocationLabel,
   isDegreeLabel,
+  isAnswerableCheckboxGroup,
   isDisciplineLabel,
   isSchoolLabel,
   isStandardRecruitmentConsent,
@@ -470,6 +471,100 @@ for (const [candidate, want, why] of SEEDS) {
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${JSON.stringify(got).padEnd(16)} <- ${String(candidate).slice(0, 46)}`);
   if (!ok) console.log(`        expected ${JSON.stringify(want)} - ${why}`);
+}
+
+// Which "select all that apply" checkbox groups may be answered. Every
+// clause in the predicate is a refusal, so every clause gets a case - the
+// whole 34-form corpus yields exactly one group that clears them all, and
+// the sensitive-category rule then refuses that one too.
+const box = (label: string, groupQuestion: string, over: Partial<{ type: string; skipAlways: boolean }> = {}) =>
+  ({ label, groupQuestion, type: "checkbox", skipAlways: false, ...over }) as never;
+
+const GROUPS: [string, never[], boolean, string][] = [
+  [
+    "a real select-all question",
+    [
+      box("Creating or managing purchase orders", "Which of the following have you had hands-on experience with? Select all that apply."),
+      box("Inventory management or replenishment", "Which of the following have you had hands-on experience with? Select all that apply."),
+    ],
+    true,
+    "THE GAP: seven REQUIRED boxes like these were unanswerable on a live Lever posting",
+  ],
+  [
+    "a question mark is enough on its own",
+    [box("Python", "Which languages do you use?"), box("SQL", "Which languages do you use?")],
+    true,
+    "phrased as a question rather than an instruction",
+  ],
+  [
+    "the question is just an option repeated back",
+    [box("Performance Cookies", "Performance Cookies"), box("Functional Cookies", "Performance Cookies")],
+    false,
+    "the cookie-banner shape the snapshot corpus surfaced",
+  ],
+  [
+    "an option repeated back that would otherwise pass the shape test",
+    [
+      box("Do you have a valid driver's licence?", "Do you have a valid driver's licence?"),
+      box("Are you willing to relocate?", "Do you have a valid driver's licence?"),
+    ],
+    false,
+    "options that are themselves questions - the walk grabbed the first one, and it clears the shape test, so only the repeated-back clause refuses it",
+  ],
+  [
+    "page chrome rather than a question",
+    [
+      box("I consent", "Apply for this job*indicates a required fieldAutofill my application"),
+      box("I agree", "Apply for this job*indicates a required fieldAutofill my application"),
+    ],
+    false,
+    "the walk climbed into the form header",
+  ],
+  [
+    "a protected category",
+    [box("She/Her/Hers", "What are your pronouns? *"), box("He/Him/His", "What are your pronouns? *")],
+    false,
+    "the one group in the corpus that clears every other clause - and must still be refused",
+  ],
+  [
+    "consent wording",
+    [
+      box("Yes", "Do you consent to the processing of your personal data?"),
+      box("No", "Do you consent to the processing of your personal data?"),
+    ],
+    false,
+    "as restricted as it is one box at a time",
+  ],
+  [
+    "a single box is not a group",
+    [box("Acknowledge", "Which of the following apply? Select all that apply.")],
+    false,
+    "one checkbox is a consent or acknowledgement, which has its own rules",
+  ],
+  [
+    "a group with no resolved question",
+    [box("Option A", ""), box("Option B", "")],
+    false,
+    "nothing to answer against",
+  ],
+  [
+    "a skipped control in the group",
+    [
+      box("Option A", "Which apply? Select all that apply.", { skipAlways: true }),
+      box("Option B", "Which apply? Select all that apply."),
+    ],
+    false,
+    "a group containing something the scanner already refused is not answered wholesale",
+  ],
+];
+
+console.log("\nisAnswerableCheckboxGroup");
+for (const [name, members, want, why] of GROUPS) {
+  const got = isAnswerableCheckboxGroup(members);
+  const good = got === want;
+  good ? pass++ : fail++;
+  console.log(`  ${good ? "PASS" : "FAIL"}  answerable=${String(got).padEnd(5)} ${name}`);
+  if (!good) console.log(`        expected ${want} - ${why}`);
 }
 
 console.log("\nisTickableAcknowledgement");

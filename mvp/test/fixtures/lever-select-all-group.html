@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+THE GAP: a "select all that apply" checkbox group reached the fill loop as
+N unrelated labels with nothing joining them, so every option landed in the
+blanket "checkbox/consent field left for user to decide" skip.
+
+Measured on a live Lever posting: seven REQUIRED boxes under "Which of the
+following have you had hands-on experience with? Select all that apply.",
+none of them answerable, so the application could not be submitted without
+doing that question by hand. It is a skills question, not a consent.
+
+The group's shared question used to be resolved for radios only. Lever's
+shape is the harder one - there is NO fieldset and NO legend; the question
+sits in a sibling of the container holding the boxes:
+
+  <li class="application-question">
+    <div>Which of the following ...?</div>
+    <div class="application-field"><ul><li><label><input type=checkbox>...
+
+The second group is the half that keeps this honest. Its boxes share a name
+and have a perfectly good question, but it is a protected category - so the
+question must still resolve (that is the scanner's job) while the predicate
+that decides what may be ANSWERED refuses it (that is the policy).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Lever - select all that apply</title>
+  </head>
+  <body>
+    <ul>
+      <li class="application-question">
+        <div>Which of the following have you had hands-on experience with? Select all that apply.</div>
+        <div class="application-field">
+          <ul>
+            <li><label><input type="checkbox" name="cards[abc][field0]" required /> Creating or managing purchase orders</label></li>
+            <li><label><input type="checkbox" name="cards[abc][field0]" required /> Inventory management or replenishment</label></li>
+            <li><label><input type="checkbox" name="cards[abc][field0]" required /> Tracking supplier orders or shipments</label></li>
+            <li><label><input type="checkbox" name="cards[abc][field0]" required /> None of the above</label></li>
+          </ul>
+        </div>
+      </li>
+
+      <li class="application-question">
+        <div>What are your pronouns? Select all that apply.</div>
+        <div class="application-field">
+          <ul>
+            <li><label><input type="checkbox" name="cards[abc][pronouns]" /> She/Her/Hers</label></li>
+            <li><label><input type="checkbox" name="cards[abc][pronouns]" /> He/Him/His</label></li>
+            <li><label><input type="checkbox" name="cards[abc][pronouns]" /> They/Them</label></li>
+          </ul>
+        </div>
+      </li>
+    </ul>
+  </body>
+</html>

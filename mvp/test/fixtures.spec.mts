@@ -16,7 +16,7 @@
  *   npm test -- paycom          # run only matching fixtures
  */
 import { chromium, type Browser, type Page } from "playwright";
-import { findFormContext, discoverFields, detectAuthWall, isLocationLabel, reachability, type DiscoveredField } from "../src/apply.js";
+import { findFormContext, discoverFields, detectAuthWall, isAnswerableCheckboxGroup, isLocationLabel, reachability, type DiscoveredField } from "../src/apply.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -150,6 +150,30 @@ const CASES: Case[] = [
 
       // Everything is inside the field branch, so stripping would empty it.
       t.ok("a label with no text outside the field falls back rather than emptying", /why do you want to work here/i.test(byId("why")?.label ?? ""));
+    },
+  },
+  {
+    file: "lever-select-all-group.html",
+    bug: "a 'select all that apply' group was unanswerable - every option fell into the blanket checkbox skip",
+    check(fields, t) {
+      const skills = fields.filter((f) => f.nameAttr === "cards[abc][field0]");
+      const pronouns = fields.filter((f) => f.nameAttr === "cards[abc][pronouns]");
+      t.ok("both groups discovered", skills.length === 4 && pronouns.length === 3);
+
+      // The scanner's job: resolve the shared question. There is no
+      // fieldset here, so this comes from the walk, not a <legend>.
+      t.ok("the skills group resolves its question", /hands-on experience/i.test(skills[0]?.groupQuestion ?? ""));
+      t.ok("every member carries the same question", new Set(skills.map((f) => f.groupQuestion)).size === 1);
+      t.ok("the question is not just one of the options", skills.every((f) => f.label.trim() !== f.groupQuestion.trim()));
+      t.is("the required marker survives", skills[0]?.required, true);
+
+      // That group is answerable...
+      t.ok("the skills group may be answered", isAnswerableCheckboxGroup(skills));
+
+      // ...and this one resolves its question just as well, but policy
+      // refuses it. Scanner and policy are deliberately separate.
+      t.ok("the pronouns group also resolves its question", /pronouns/i.test(pronouns[0]?.groupQuestion ?? ""));
+      t.ok("but it is refused as a protected category", !isAnswerableCheckboxGroup(pronouns));
     },
   },
   {

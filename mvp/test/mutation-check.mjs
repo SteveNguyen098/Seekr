@@ -512,6 +512,57 @@ const MUTATIONS = [
     to: "    /^(current |preferred |your )?location.*$/.test(labelLower) ||",
   },
   {
+    // The gap: a "select all that apply" group reached the fill loop as N
+    // unrelated labels, so every option landed in the blanket skip.
+    // Lives in discoverFields, so the fixture spec is what can see it - the
+    // label specs are pure functions and never touch the DOM.
+    bug: "stop resolving a checkbox group's shared question",
+    fixture: "lever-select-all",
+    from: "        const questionGroupName = type === \"radio\" || type === \"checkbox\" ? el.getAttribute(\"name\") || \"\" : \"\";",
+    to: '        const questionGroupName = type === "radio" ? el.getAttribute("name") || "" : "";',
+  },
+  {
+    // The cookie-banner shape the corpus surfaced: the "question" is just
+    // one of the options repeated back, which is not a question at all.
+    bug: "answer a group whose question is only an option repeated back",
+    spec: "labels",
+    fixture: "",
+    from: "  if (members.some((m) => m.label.trim() === question)) return false;",
+    to: "",
+  },
+  {
+    // Without the shape test, the form header ("Apply for this job...")
+    // becomes a question the model is asked to answer.
+    bug: "answer a group whose question is page chrome",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!/\\?/.test(question) && !/select (all|one|any)|check all|that apply|choose all/i.test(question)) return false;",
+    to: "",
+  },
+  {
+    // The one group in the whole corpus that clears every other clause is a
+    // pronouns question. This is what stops it being answered.
+    bug: "answer a protected-category checkbox group",
+    spec: "labels",
+    fixture: "",
+    from: "  if (SENSITIVE_RE.test(question.toLowerCase())) return false;\n  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;\n  return true;",
+    to: "  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;\n  return true;",
+  },
+  {
+    bug: "answer a consent checkbox group wholesale",
+    spec: "labels",
+    fixture: "",
+    from: "  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;\n  return true;",
+    to: "  return true;",
+  },
+  {
+    bug: "treat a single checkbox as a group",
+    spec: "labels",
+    fixture: "",
+    from: "  if (members.length < 2) return false;",
+    to: "",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',

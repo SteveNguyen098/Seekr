@@ -349,6 +349,45 @@ export function isDisciplineLabel(labelLower: string): boolean {
   );
 }
 
+/**
+ * True when a "select all that apply" checkbox group may be answered.
+ *
+ * Exported and pure for the same reason isTickableAcknowledgement is:
+ * every clause here is a refusal, and a refusal that cannot be tested is a
+ * refusal nobody will notice breaking.
+ *
+ * The walk that resolves a group's shared question is tuned for radios and
+ * is looser on checkboxes, so what it returns is checked before it is acted
+ * on. The snapshot corpus showed both ways it goes wrong: a cookie-banner
+ * group came back with each box's OWN label as the "question", and a
+ * consent box came back with the form header.
+ *
+ * Measured across 34 captured forms, exactly one group clears all of this -
+ * a pronouns question, which the sensitive-category rule then refuses. The
+ * cost of being this conservative is a field the candidate fills
+ * themselves, which is what already happens today.
+ */
+export function isAnswerableCheckboxGroup(
+  members: Pick<DiscoveredField, "label" | "groupQuestion" | "type" | "skipAlways">[]
+): boolean {
+  // One box sharing a name with nothing is not a group - it is a single
+  // consent or acknowledgement, which has its own rules.
+  if (members.length < 2) return false;
+  if (members.some((m) => m.type !== "checkbox" || m.skipAlways)) return false;
+
+  const question = members[0].groupQuestion?.trim() ?? "";
+  if (!question) return false;
+  // The "question" is just one of the options repeated back.
+  if (members.some((m) => m.label.trim() === question)) return false;
+  // A real one reads as a question or an instruction to pick several.
+  if (!/\?/.test(question) && !/select (all|one|any)|check all|that apply|choose all/i.test(question)) return false;
+  // Never a protected category, and never anything that reads as consent -
+  // both stay exactly as restricted as they are one box at a time.
+  if (SENSITIVE_RE.test(question.toLowerCase())) return false;
+  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;
+  return true;
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -1143,8 +1182,22 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
 
         const groupName = type === "radio" ? el.getAttribute("name") || "" : "";
+        // Checkboxes get their group's question resolved too, not just
+        // radios. A "select all that apply" question is one question with
+        // several boxes, exactly like a radio group - but it used to reach
+        // the fill loop as N separate labels with nothing joining them, so
+        // every option landed in the blanket "left for user to decide"
+        // bucket. Measured on a live Lever posting: seven REQUIRED boxes
+        // under "Which of the following have you had hands-on experience
+        // with?", none of them answerable, so the application could not be
+        // submitted without doing it by hand.
+        //
+        // The walk below is shared rather than copied; the only thing that
+        // changes is which controls count as "mine" when deciding whether a
+        // candidate block belongs to another field.
+        const questionGroupName = type === "radio" || type === "checkbox" ? el.getAttribute("name") || "" : "";
         let groupQuestion = "";
-        if (type === "radio") {
+        if (questionGroupName) {
           // The group's shared question ("Gender") lives in a <label>
           // that's a *direct* child of the group's <fieldset> - confirmed
           // live on Ashby, where every EEOC radio group (Gender, Race,
@@ -1226,7 +1279,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
               clone.querySelectorAll("style, script, noscript, template").forEach((n) => n.remove());
               const text = (clone.textContent || "").replace(/\s+/g, " ").trim();
               const foreignControls = Array.from(clone.querySelectorAll("input, select, textarea")).filter(
-                (c) => (c.getAttribute("name") || "") !== groupName
+                (c) => (c.getAttribute("name") || "") !== questionGroupName
               );
               if (foreignControls.length === 0 && text.length > 25 && text.length < 400 && text.includes("?")) {
                 groupQuestion = text;
@@ -2628,6 +2681,50 @@ export async function fillCurrentPage(
     for (const m of members) handledSelectors.add(m.selector);
   }
 
+  // The same idea for "select all that apply" CHECKBOX groups.
+  //
+  // THE GAP: these reached the fill loop as N unrelated labels with nothing
+  // joining them, so every option fell into the blanket "checkbox/consent
+  // field left for user to decide" skip. Measured on a live Lever posting -
+  // seven REQUIRED boxes under "Which of the following have you had
+  // hands-on experience with?", none answerable, so the application could
+  // not be submitted without doing that question by hand. It is a skills
+  // question, not a consent or a legal attestation.
+  //
+  // Grouped by nameAttr rather than groupName, which is radio-only by
+  // design. Everything the existing checkbox rules refuse still runs first:
+  // sensitive categories, self-identify groups, broader-scope consent.
+  const checkboxGroupMembersBySelector = new Map<string, DiscoveredField[]>();
+  const checkboxGroups = new Map<string, DiscoveredField[]>();
+  for (const field of fields) {
+    if (field.type !== "checkbox" || !field.nameAttr || field.skipAlways) continue;
+    if (!checkboxGroups.has(field.nameAttr)) checkboxGroups.set(field.nameAttr, []);
+    checkboxGroups.get(field.nameAttr)!.push(field);
+  }
+  for (const members of checkboxGroups.values()) {
+    if (!isAnswerableCheckboxGroup(members)) continue;
+    const question = members[0].groupQuestion;
+    // A group already accounted for by the self-identify rule is left to
+    // it; that one ticks a specific option on the candidate's instruction.
+    if (members.some((m) => selfIdentifiedGroups.has(m.nameAttr))) continue;
+    if (members.some((m) => handledSelectors.has(m.selector))) continue;
+
+    const anchor = members[0];
+    checkboxGroupMembersBySelector.set(anchor.selector, members);
+    toAnswer.push({
+      selector: anchor.selector,
+      label: question,
+      tag: anchor.tag,
+      type: anchor.type,
+      options: members.map((m) => m.label),
+      isCombobox: false,
+      required: members.some((m) => m.required),
+      // The whole point: several answers may apply at once.
+      multiSelect: true,
+    });
+    for (const m of members) handledSelectors.add(m.selector);
+  }
+
   for (const members of radioGroups.values()) {
     const question = members[0].groupQuestion || members[0].label;
     if (!SENSITIVE_RE.test(question.toLowerCase())) continue;
@@ -3362,6 +3459,43 @@ export async function fillCurrentPage(
       }
 
       if (field.multiSelect) {
+        // A "select all that apply" checkbox group: the answers name the
+        // group's own member boxes, so resolve each back to its input and
+        // tick it. No sibling button to click and no dropdown to open.
+        const boxes = checkboxGroupMembersBySelector.get(field.selector);
+        if (boxes) {
+          const norm = (s: string) => s.trim().toLowerCase();
+          const matched: DiscoveredField[] = [];
+          const unmatched: string[] = [];
+          for (const v of values) {
+            const w = norm(v);
+            const m =
+              boxes.find((b) => norm(b.label) === w) ??
+              boxes.find((b) => norm(b.label).startsWith(w)) ??
+              boxes.find((b) => w.startsWith(norm(b.label)));
+            if (m && !matched.includes(m)) matched.push(m);
+            else if (!m) unmatched.push(v);
+          }
+          const ticked: string[] = [];
+          for (const m of matched) {
+            if (await checkField(formCtx, m.selector)) ticked.push(m.label);
+          }
+          if (ticked.length) {
+            filled.push({ label: field.label, value: ticked.join(", "), generated: true, lowConfidence });
+            // Said out loud rather than buried: this is the one field type
+            // where a wrong tick is a claim about the candidate's own
+            // experience, and the options were picked by the model.
+            notes.push(
+              `"${field.label.slice(0, 60)}" was answered by ticking ${ticked.length} of ${boxes.length} option(s): ${ticked.join(", ").slice(0, 140)}. Worth checking against your own history.`
+            );
+          } else {
+            skipped.push({ label: field.label, reason: `could not tick any of [${values.join(", ")}] for this question`, required });
+          }
+          if (unmatched.length) {
+            notes.push(`"${field.label.slice(0, 50)}": ${unmatched.length} answer(s) matched no option on the form and were ignored: ${unmatched.join(", ").slice(0, 90)}`);
+          }
+          continue;
+        }
         if (field.isCombobox) {
           const picked = await selectMultipleComboboxOptions(formCtx, field.selector, values);
           if (picked.length > 0) filled.push({ label: field.label, value: picked.join(", "), generated: true, lowConfidence });
