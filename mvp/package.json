@@ -11,7 +11,8 @@
     "test:pipeline": "tsx test/snapshot-pipeline.mjs",
     "test:join": "node test/join-check.mjs",
     "test:classify": "tsx test/classify.spec.mts",
-    "test:labels": "tsx test/labels.spec.mts"
+    "test:labels": "tsx test/labels.spec.mts",
+    "test:electron": "tsx test/electron-smoke.mts"
   },
   "keywords": [],
   "author": "",
