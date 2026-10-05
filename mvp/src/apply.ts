@@ -597,7 +597,45 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         }
         if (!label) {
           const closestLabel = el.closest("label");
-          label = closestLabel?.textContent?.trim() || "";
+          if (closestLabel) {
+            // A wrapping <label> contains the CONTROL as well as its
+            // caption, so its raw textContent is the caption plus whatever
+            // the widget itself renders - placeholders, status messages,
+            // spinner text.
+            //
+            // Confirmed live on Lever, whose markup is
+            //   <label><div class="application-label">Current location</div>
+            //          <div class="application-field"> ...input... </div></label>
+            // The location field came back labelled "Current location No
+            // location found. Try entering a different locationLoading",
+            // and the resume upload "Resume/CV ✱ATTACH RESUME/CVCouldn't
+            // auto-read resume.Analyzing", neither of which is a question.
+            //
+            // The caption is the text OUTSIDE the control's own branch, so
+            // the branch is removed from a clone before reading. Clone
+            // rather than mutate - this runs during discovery, and the real
+            // form still has to be fillable afterwards.
+            // Marker FIRST, then clone - cloneNode copies the attributes
+            // present at the moment it runs, so marking afterwards leaves
+            // the clone unmarked and the branch unfindable.
+            const marker = "data-seekr-label-scope";
+            el.setAttribute(marker, "1");
+            const clone = closestLabel.cloneNode(true) as HTMLElement;
+            el.removeAttribute(marker);
+            const twin = clone.querySelector(`[${marker}]`);
+            // Drop the branch the control sits in, not just the control:
+            // the junk is its siblings inside that branch, not the input.
+            if (twin) {
+              let branch: Element = twin;
+              while (branch.parentElement && branch.parentElement !== clone) branch = branch.parentElement;
+              branch.remove();
+            }
+            const trimmed = (clone.textContent || "").trim();
+            // Fall back to the raw text if stripping left nothing - a label
+            // whose only text lives inside the field is still better than
+            // no label at all.
+            label = trimmed || closestLabel.textContent?.trim() || "";
+          }
         }
         if (!label) label = el.getAttribute("placeholder") || "";
         // A generic instruction word ("Select", "Select...", "Search",
@@ -765,7 +803,13 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
             break;
           }
         }
-        const required = requiredAttr || /\*/.test(label) || cssRequiredAsterisk;
+        // Asterisk variants, not just ASCII "*". Lever marks required
+        // fields with U+2731 HEAVY ASTERISK as real text in the caption -
+        // measured on a live board - so "Resume/CV ✱" read as optional
+        // while the form itself was telling the candidate otherwise. The
+        // other starred fields on that form happened to carry the required
+        // attribute too, which is exactly why this stayed invisible.
+        const required = requiredAttr || /[*∗✱⁎﹡＊]/.test(label) || cssRequiredAsterisk;
         // type="tel" input's label can capture unrelated text - confirmed live on
         // Workable, where the phone input has no id/placeholder/aria-label at all,
         // so its wrapping <label> (which also contains a hidden 3,192-char

@@ -46,8 +46,8 @@ const MUTATIONS = [
   {
     bug: "stop detecting a CSS-painted required asterisk",
     fixture: "ashby-css",
-    from: "const required = requiredAttr || /\\*/.test(label) || cssRequiredAsterisk;",
-    to: "const required = requiredAttr || /\\*/.test(label);",
+    from: "const required = requiredAttr || /[*∗✱⁎﹡＊]/.test(label) || cssRequiredAsterisk;",
+    to: "const required = requiredAttr || /[*∗✱⁎﹡＊]/.test(label);",
   },
   {
     bug: "prefer the regenerated id over the stable name",
@@ -467,6 +467,30 @@ const MUTATIONS = [
     fixture: "",
     from: "  if (/\\?/.test(label) && !/\\bnames?\\b/i.test(label)) return false;",
     to: "  if (/\\?/.test(label)) return false;",
+  },
+  {
+    // The bug that shipped: a wrapping <label> contains the control as well
+    // as its caption, so its raw text is the question plus whatever the
+    // widget renders - status messages, spinner text, button chrome.
+    bug: "read a wrapping label's whole text, widget chatter included",
+    fixture: "lever-wrapping",
+    from: "            const clone = closestLabel.cloneNode(true) as HTMLElement;",
+    to: "            const clone = document.createElement('div');\n            clone.textContent = closestLabel.textContent;",
+  },
+  {
+    // The ordering error I actually made: cloneNode copies the attributes
+    // present when it runs, so marking afterwards leaves the clone unmarked
+    // and nothing gets stripped.
+    bug: "clone the label before marking the control, so the branch is unfindable",
+    fixture: "lever-wrapping",
+    from: "            el.setAttribute(marker, \"1\");\n            const clone = closestLabel.cloneNode(true) as HTMLElement;",
+    to: "            const clone = closestLabel.cloneNode(true) as HTMLElement;\n            el.setAttribute(marker, \"1\");",
+  },
+  {
+    bug: "only treat an ASCII asterisk as a required marker",
+    fixture: "lever-wrapping",
+    from: "/[*∗✱⁎﹡＊]/.test(label)",
+    to: "/\\*/.test(label)",
   },
   {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",

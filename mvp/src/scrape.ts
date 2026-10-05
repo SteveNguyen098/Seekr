@@ -115,7 +115,25 @@ async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPostin
     const parsed = await page.$$eval("a.posting-title", (els) =>
       els.map((el) => {
         const title = el.querySelector("h5")?.textContent?.trim() || el.textContent?.trim() || "";
-        const location = el.querySelector(".posting-categories")?.textContent?.trim() ?? "";
+        // Each category is its own element and they carry no separator of
+        // their own, so reading the container's textContent runs them
+        // together: measured on a live Lever board as
+        // "Remote — Full-timeNew York, NY", which is the commitment and the
+        // city welded into one word. Joined explicitly instead.
+        const cats = el.querySelector(".posting-categories");
+        const parts = cats
+          ? [...cats.children]
+              .map((c) =>
+                (c.textContent || "")
+                  .replace(/\s+/g, " ")
+                  // Lever's workplace-type element carries its own trailing
+                  // dash, so joining raw parts yields "Remote — — Full-time".
+                  .replace(/^[\s–—-]+|[\s–—-]+$/g, "")
+                  .trim()
+              )
+              .filter(Boolean)
+          : [];
+        const location = parts.length ? parts.join(" — ") : (cats?.textContent?.trim() ?? "");
         return { title, href: (el as HTMLAnchorElement).href, location };
       })
     );

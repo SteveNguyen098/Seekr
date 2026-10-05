@@ -16,7 +16,7 @@
  *   npm test -- paycom          # run only matching fixtures
  */
 import { chromium, type Browser, type Page } from "playwright";
-import { findFormContext, discoverFields, detectAuthWall, reachability, type DiscoveredField } from "../src/apply.js";
+import { findFormContext, discoverFields, detectAuthWall, isLocationLabel, reachability, type DiscoveredField } from "../src/apply.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -124,6 +124,32 @@ const CASES: Case[] = [
       // not claim it, and the flag alone must not be taken as permission.
       t.is("a non-date education field is still flagged", byId("edu_level")?.inEducationSection, true);
       t.is("and keeps its own label", byId("edu_level")?.label, "Highest education level");
+    },
+  },
+  {
+    file: "lever-wrapping-label.html",
+    bug: "a wrapping <label> handed the widget's own status messages to Claude as the question",
+    check(fields, t) {
+      const byId = (id: string) => fields.find((f) => f.idOrName.split(/\s+/).includes(id));
+      const loc = byId("location-input");
+      const resume = byId("resume");
+
+      t.is("the caption wins over the widget's chatter", loc?.label, "Current location");
+      t.ok("no status message leaked in", !/no location found|loading/i.test(loc?.label ?? ""));
+      // Not cosmetic: this exact label is what isLocationLabel matches on,
+      // so the contaminated version sent a profile-answerable field to the
+      // model instead.
+      t.ok("and it is the shape isLocationLabel recognises", isLocationLabel(loc?.label.toLowerCase() ?? ""));
+
+      t.is("the file field keeps only its caption", resume?.label, "Resume/CV ✱");
+      t.ok("the attach-button chrome is gone", !/attach resume|auto-read|analyzing/i.test(resume?.label ?? ""));
+      t.is("the asterisk still marks it required", resume?.required, true);
+
+      // Nothing to strip - must be untouched.
+      t.is("a plain wrapping label is unchanged", byId("fullname")?.label, "Full name");
+
+      // Everything is inside the field branch, so stripping would empty it.
+      t.ok("a label with no text outside the field falls back rather than emptying", /why do you want to work here/i.test(byId("why")?.label ?? ""));
     },
   },
   {

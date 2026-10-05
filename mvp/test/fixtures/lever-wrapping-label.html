@@ -1,0 +1,70 @@
+<!doctype html>
+<!--
+BUG: a wrapping <label> handed the widget's own chatter to Claude as the
+question.
+
+Lever wraps the caption AND the field in one <label>:
+
+  <label>
+    <div class="application-label">Current location</div>
+    <div class="application-field"> ...input, status messages... </div>
+  </label>
+
+so label.textContent is the caption plus whatever the widget renders.
+Measured live on jobs.lever.co: the location field came back labelled
+"Current location No location found. Try entering a different
+locationLoading", and the resume upload "Resume/CV ✱ATTACH RESUME/CVCouldn't
+auto-read resume.Analyzing". Neither is a question, and the location one
+also stopped matching isLocationLabel, so a field that should be answered
+from the profile went to the model with a confusing label instead.
+
+The caption is the text OUTSIDE the control's own branch. The fix clones
+the label, removes the branch the control sits in, and reads what is left.
+
+The last two cases are the ones that keep the fix honest: a label whose
+ONLY text lives beside the input must survive (there is nothing to strip),
+and a label whose only text is inside the field's branch must fall back to
+the raw text rather than coming back empty.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Lever - wrapping label with widget chatter</title>
+  </head>
+  <body>
+    <!-- The reported shape: caption in one branch, field in another. -->
+    <label>
+      <div class="application-label">Current location</div>
+      <div class="application-field">
+        <input type="text" id="location-input" name="location" />
+        <span class="status">No location found. Try entering a different location</span>
+        <span class="spinner">Loading</span>
+      </div>
+    </label>
+
+    <label>
+      <div class="application-label">Resume/CV ✱</div>
+      <div class="application-field">
+        <input type="file" id="resume" name="resume" />
+        <span class="chrome">ATTACH RESUME/CV</span>
+        <span class="status">Couldn't auto-read resume.</span>
+        <span class="spinner">Analyzing</span>
+      </div>
+    </label>
+
+    <!-- Plain wrapping label: nothing to strip, must be unchanged. -->
+    <label>
+      Full name
+      <input type="text" id="fullname" name="fullname" required />
+    </label>
+
+    <!-- Everything lives inside the field branch. Stripping it would leave
+         nothing, so the raw text has to be kept rather than returning "". -->
+    <label>
+      <div class="application-field">
+        <span>Why do you want to work here?</span>
+        <textarea id="why" name="why"></textarea>
+      </div>
+    </label>
+  </body>
+</html>
