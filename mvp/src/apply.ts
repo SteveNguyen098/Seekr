@@ -1289,7 +1289,18 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
           }
         }
 
-        const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";
+        // The ATTRIBUTE, not the property. A radio with no value attribute
+        // reports .value as "on" - a DOM default that exists nowhere in the
+        // HTML - and stableRadioSelector would then build
+        // [name=...][value="on"], which matches nothing. Measured on Ashby,
+        // whose radios carry no value at all: the selector resolved to 0
+        // elements while the plain id selector resolved to 1, so every
+        // radio question on that platform silently failed to tick. Two
+        // reports came from this - a required work-authorization pair and a
+        // required pronouns question, both answered correctly and then not
+        // clicked. Empty here means stableRadioSelector falls back to the
+        // id, which is exactly right: there is no stable value to key on.
+        const radioValue = type === "radio" ? el.getAttribute("value") || "" : "";
         return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "" };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
@@ -1395,7 +1406,7 @@ export async function reachability(ctx: FormContext, selector: string): Promise<
  * Falls back to the discovered selector when name/value aren't both present
  * (a checkbox, or a radio with no value attribute).
  */
-function stableRadioSelector(field: DiscoveredField): string {
+export function stableRadioSelector(field: DiscoveredField): string {
   if (!field.groupName || !field.radioValue) return field.selector;
   // Escaped for a double-quoted attribute selector. CSS.escape is a browser
   // API and this string is built in Node, so escape the two characters that

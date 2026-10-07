@@ -16,7 +16,7 @@
  *   npm test -- paycom          # run only matching fixtures
  */
 import { chromium, type Browser, type Page } from "playwright";
-import { findFormContext, discoverFields, detectAuthWall, isAnswerableCheckboxGroup, isLocationLabel, reachability, type DiscoveredField } from "../src/apply.js";
+import { findFormContext, discoverFields, detectAuthWall, checkField, isAnswerableCheckboxGroup, isLocationLabel, reachability, stableRadioSelector, type DiscoveredField } from "../src/apply.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -174,6 +174,34 @@ const CASES: Case[] = [
       // refuses it. Scanner and policy are deliberately separate.
       t.ok("the pronouns group also resolves its question", /pronouns/i.test(pronouns[0]?.groupQuestion ?? ""));
       t.ok("but it is refused as a protected category", !isAnswerableCheckboxGroup(pronouns));
+    },
+  },
+  {
+    file: "ashby-valueless-radios.html",
+    bug: "every radio question on Ashby was answered correctly and then never ticked",
+    async check(fields, t, ctx) {
+      const byId = (id: string) => fields.find((f) => f.idOrName.split(/\s+/).includes(id));
+      const authYes = byId("auth-yes");
+      const reloYes = byId("relo-yes");
+
+      // The attribute, not the property: .value reports "on" for a radio
+      // with no value attribute, and that "on" is what broke the selector.
+      t.is("a valueless radio has no radioValue", authYes?.radioValue, "");
+      t.is("a radio with a real value keeps it", reloYes?.radioValue, "yes");
+
+      // What matters is that the selector actually finds the control.
+      const authSel = stableRadioSelector(authYes!);
+      const reloSel = stableRadioSelector(reloYes!);
+      t.is("the valueless radio falls back to its id", authSel, authYes?.selector);
+      t.ok("and the id resolves to exactly one control", (await ctx.$$(authSel)).length === 1);
+
+      // The other direction: a real value still produces the attribute
+      // selector, which is what survives a platform regenerating ids.
+      t.ok("a valued radio still uses the stable attribute selector", /name="relo_group"/.test(reloSel) && /value="yes"/.test(reloSel));
+      t.ok("and that resolves to exactly one control too", (await ctx.$$(reloSel)).length === 1);
+
+      // The symptom the reports described: the tick has to land.
+      t.ok("ticking the valueless radio works", await checkField(ctx, authSel));
     },
   },
   {

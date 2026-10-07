@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+BUG: every radio question on Ashby was answered correctly and then never
+ticked.
+
+stableRadioSelector builds [name=...][value=...] so a captured selector
+survives a re-render. It took the value from the DOM PROPERTY, which
+reports "on" for a radio carrying no value attribute - a default that
+exists nowhere in the HTML. The resulting selector matched 0 elements while
+the plain id matched 1, so the click silently failed and the field was
+reported as "could not select ... for this question".
+
+Measured on two live Ashby postings, both from one batch: a required
+work-authorization pair answered Yes/No, and a required pronouns question
+answered "Not listed or decline to state". Right answers, no ticks.
+
+Reading the ATTRIBUTE makes it empty for these, which sends
+stableRadioSelector to its id fallback - correct, because there is no
+stable value to key on.
+
+The second group is the direction that must not regress: real value
+attributes, where the attribute selector is what makes a captured selector
+survive a platform that regenerates ids.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Ashby - radios with no value attribute</title>
+  </head>
+  <body>
+    <fieldset>
+      <legend>Do you have the unrestricted right to work in the United States for any employer?</legend>
+      <label><input type="radio" id="auth-yes" name="auth_group" /> Yes</label>
+      <label><input type="radio" id="auth-no" name="auth_group" /> No</label>
+    </fieldset>
+
+    <!-- Values present: the attribute selector is the whole point here. -->
+    <fieldset>
+      <legend>Are you willing to relocate?</legend>
+      <label><input type="radio" id="relo-yes" name="relo_group" value="yes" /> Yes</label>
+      <label><input type="radio" id="relo-no" name="relo_group" value="no" /> No</label>
+    </fieldset>
+  </body>
+</html>

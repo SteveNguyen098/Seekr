@@ -563,6 +563,24 @@ const MUTATIONS = [
     to: "",
   },
   {
+    // The bug that shipped: .value reports "on" for a radio carrying no
+    // value attribute, so the selector was built around an attribute that
+    // is not in the HTML and matched nothing. Two reports came from this.
+    bug: "read the radio's value PROPERTY instead of its attribute",
+    fixture: "ashby-valueless",
+    from: 'const radioValue = type === "radio" ? el.getAttribute("value") || "" : "";',
+    to: 'const radioValue = type === "radio" ? (el as HTMLInputElement).value || "" : "";',
+  },
+  {
+    // The other direction: dropping the attribute selector entirely would
+    // lose the re-render resilience it exists for on platforms that
+    // regenerate ids.
+    bug: "always fall back to the id, never using the stable attribute selector",
+    fixture: "ashby-valueless",
+    from: "  if (!field.groupName || !field.radioValue) return field.selector;",
+    to: "  return field.selector;",
+  },
+  {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",
     fixture: "hidden-modal",
     from: 'if (getComputedStyle(n).display === "none") return "not-rendered";',
