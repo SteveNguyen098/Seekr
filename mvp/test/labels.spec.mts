@@ -19,6 +19,7 @@ import {
   isLocationLabel,
   isDegreeLabel,
   isAnswerableCheckboxGroup,
+  groupCheckboxes,
   isDisciplineLabel,
   isSchoolLabel,
   isStandardRecruitmentConsent,
@@ -512,6 +513,28 @@ const GROUPS: [string, never[], boolean, string][] = [
     "options that are themselves questions - the walk grabbed the first one, and it clears the shape test, so only the repeated-back clause refuses it",
   ],
   [
+    "an instruction with no question mark",
+    [box("Tuesday through Saturday", "Please select your preferred working shift"),
+     box("Monday through Friday", "Please select your preferred working shift")],
+    true,
+    "a live Ashby question this refused - no '?', and 'select your preferred' is not 'select all'",
+  ],
+  [
+    "a protected category hiding in the OPTIONS",
+    [box("Person with disability", "Which of the following communities do you belong to? Please select all that apply."),
+     box("Veteran", "Which of the following communities do you belong to? Please select all that apply."),
+     box("Parent", "Which of the following communities do you belong to? Please select all that apply.")],
+    false,
+    "THE TRAP: the question carries no sensitive word, every one of them is in the options",
+  ],
+  [
+    "a conditional that merely mentions selecting",
+    [box("Department of Defense (DOD)", "If Yes, select the government agency or department."),
+     box("Department of Justice (DOJ)", "If Yes, select the government agency or department.")],
+    false,
+    "the opener is anchored, so a passing mention of the word is not an instruction",
+  ],
+  [
     "page chrome rather than a question",
     [
       box("I consent", "Apply for this job*indicates a required fieldAutofill my application"),
@@ -557,6 +580,49 @@ const GROUPS: [string, never[], boolean, string][] = [
     "a group containing something the scanner already refused is not answered wholesale",
   ],
 ];
+
+// How checkboxes are gathered into questions. A shared `name` is the HTML
+// way to say "these belong together"; Ashby instead names each box after
+// its own label, so nothing joins them but the question they share.
+console.log("\ngroupCheckboxes");
+{
+  const cb = (label: string, nameAttr: string, groupQuestion: string) =>
+    ({ label, nameAttr, groupQuestion, type: "checkbox", skipAlways: false }) as never;
+
+  const shared = groupCheckboxes([
+    cb("A", "skills[]", "Which apply? Select all that apply."),
+    cb("B", "skills[]", "Which apply? Select all that apply."),
+  ]);
+  const okShared = shared.size === 1 && [...shared.values()][0].length === 2;
+  okShared ? pass++ : fail++;
+  console.log(`  ${okShared ? "PASS" : "FAIL"}  a shared name forms one group`);
+
+  // THE GAP: distinct names, one shared question.
+  const ashby = groupCheckboxes([
+    cb("Tuesday through Saturday", "Tuesday through Saturday", "Please select your preferred working shift"),
+    cb("Monday through Friday", "Monday through Friday", "Please select your preferred working shift"),
+  ]);
+  const okAshby = ashby.size === 1 && [...ashby.values()][0].length === 2;
+  okAshby ? pass++ : fail++;
+  console.log(`  ${okAshby ? "PASS" : "FAIL"}  distinct names still group on their shared question`);
+  if (!okAshby) console.log(`        got ${ashby.size} group(s) - this is the Ashby shape that made every box a group of one`);
+
+  // Different questions must stay apart, or two unrelated questions get
+  // answered as one.
+  const apart = groupCheckboxes([
+    cb("Yes", "q1", "Do you have a car?"),
+    cb("No", "q2", "Are you willing to travel?"),
+  ]);
+  const okApart = apart.size === 2;
+  okApart ? pass++ : fail++;
+  console.log(`  ${okApart ? "PASS" : "FAIL"}  different questions stay in different groups`);
+
+  // Nothing to group on at all.
+  const none = groupCheckboxes([cb("Lonely", "", "")]);
+  const okNone = none.size === 0;
+  okNone ? pass++ : fail++;
+  console.log(`  ${okNone ? "PASS" : "FAIL"}  a box with neither a name nor a question is not grouped`);
+}
 
 console.log("\nisAnswerableCheckboxGroup");
 for (const [name, members, want, why] of GROUPS) {

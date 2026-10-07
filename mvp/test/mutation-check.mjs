@@ -536,7 +536,7 @@ const MUTATIONS = [
     bug: "answer a group whose question is page chrome",
     spec: "labels",
     fixture: "",
-    from: "  if (!/\\?/.test(question) && !/select (all|one|any)|check all|that apply|choose all/i.test(question)) return false;",
+    from: "  if (!asksForAPick) return false;",
     to: "",
   },
   {
@@ -545,8 +545,8 @@ const MUTATIONS = [
     bug: "answer a protected-category checkbox group",
     spec: "labels",
     fixture: "",
-    from: "  if (SENSITIVE_RE.test(question.toLowerCase())) return false;\n  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;\n  return true;",
-    to: "  if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;\n  return true;",
+    from: '  if (SENSITIVE_RE.test([question, ...members.map((m) => m.label)].join(" ").toLowerCase())) return false;',
+    to: "",
   },
   {
     bug: "answer a consent checkbox group wholesale",
@@ -579,6 +579,43 @@ const MUTATIONS = [
     fixture: "ashby-valueless",
     from: "  if (!field.groupName || !field.radioValue) return field.selector;",
     to: "  return field.selector;",
+  },
+  {
+    // THE DANGEROUS ONE. "Which of the following communities do you belong
+    // to?" carries no protected-category word; every one of them is in the
+    // options. Judging the question alone lets a model tick "Veteran" or
+    // "Person with disability" about someone.
+    bug: "judge a group's sensitivity on its question alone, ignoring the options",
+    spec: "labels",
+    fixture: "",
+    from: "  if (SENSITIVE_RE.test([question, ...members.map((m) => m.label)].join(\" \").toLowerCase())) return false;",
+    to: "  if (SENSITIVE_RE.test(question.toLowerCase())) return false;",
+  },
+  {
+    // The gap: Ashby names each box after its own label, so nothing joins
+    // them but the question they share.
+    bug: "group checkboxes by name only, so a group with distinct names is never formed",
+    spec: "labels",
+    fixture: "",
+    from: "    const key = sharedName ? `name:${field.nameAttr}` : field.groupQuestion ? `q:${field.groupQuestion}` : \"\";",
+    to: '    const key = sharedName ? `name:${field.nameAttr}` : "";',
+  },
+  {
+    bug: "require a question mark or 'select all', refusing a plain instruction",
+    spec: "labels",
+    fixture: "",
+    from: "    /^\\s*(please\\s+)?(select|choose|check|pick)\\b/i.test(question);",
+    to: "    false;",
+  },
+  {
+    // The other direction: unanchored, "If Yes, select the government
+    // agency" becomes an instruction and a conditional question gets
+    // answered as though it applied.
+    bug: "match the instruction opener anywhere, not just at the start",
+    spec: "labels",
+    fixture: "",
+    from: "    /^\\s*(please\\s+)?(select|choose|check|pick)\\b/i.test(question);",
+    to: "    /(please\\s+)?(select|choose|check|pick)\\b/i.test(question);",
   },
   {
     bug: "stop telling display:none apart from 0x0, so hidden-modal fields get filled",

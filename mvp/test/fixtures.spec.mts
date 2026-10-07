@@ -174,6 +174,22 @@ const CASES: Case[] = [
       // refuses it. Scanner and policy are deliberately separate.
       t.ok("the pronouns group also resolves its question", /pronouns/i.test(pronouns[0]?.groupQuestion ?? ""));
       t.ok("but it is refused as a protected category", !isAnswerableCheckboxGroup(pronouns));
+
+      // Ashby names each box after its own label, so nothing joins them but
+      // the question. Grouping on name alone made every box a group of one.
+      const shift = fields.filter((f) => /through (Saturday|Friday)/.test(f.label));
+      t.ok("both shift boxes discovered", shift.length === 2);
+      t.ok("they have DIFFERENT names", new Set(shift.map((f) => f.nameAttr)).size === 2);
+      t.ok("but share one question", new Set(shift.map((f) => f.groupQuestion)).size === 1);
+      t.ok("and the question is an instruction, not a question mark", /^please select/i.test(shift[0]?.groupQuestion ?? ""));
+      t.ok("so the shift group may be answered", isAnswerableCheckboxGroup(shift));
+
+      // The trap: no protected-category word in the QUESTION, all of them
+      // in the options.
+      const communities = fields.filter((f) => /disability|neurodivergent|veteran|parent|prefer not to answer/i.test(f.label));
+      t.ok("the communities group discovered", communities.length === 5);
+      t.ok("its question carries no sensitive word at all", !/disabilit|veteran|gender|race|ethnic/i.test(communities[0]?.groupQuestion ?? ""));
+      t.ok("but it is refused on its OPTIONS", !isAnswerableCheckboxGroup(communities));
     },
   },
   {

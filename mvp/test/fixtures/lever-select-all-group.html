@@ -51,6 +51,36 @@ that decides what may be ANSWERED refuses it (that is the policy).
           </ul>
         </div>
       </li>
+
+      <!-- Ashby's shape: each box is named after its OWN label, so nothing
+           joins them but the question they share. Grouping on name alone
+           put every box in a group of one and the feature bailed. -->
+      <li class="application-question">
+        <div>Please select your preferred working shift</div>
+        <div class="application-field">
+          <ul>
+            <li><label><input type="checkbox" name="Tuesday through Saturday" /> Tuesday through Saturday</label></li>
+            <li><label><input type="checkbox" name="Monday through Friday" /> Monday through Friday</label></li>
+          </ul>
+        </div>
+      </li>
+
+      <!-- The trap. The QUESTION carries no protected-category word at all;
+           every one of them is in the OPTIONS. Judging the question alone
+           would let a model tick "Veteran" or "Person with disability"
+           about someone. Taken verbatim from a live Ashby posting. -->
+      <li class="application-question">
+        <div>Which of the following communities do you belong to? Please select all that apply.</div>
+        <div class="application-field">
+          <ul>
+            <li><label><input type="checkbox" name="Person with disability" /> Person with disability</label></li>
+            <li><label><input type="checkbox" name="Neurodivergent" /> Neurodivergent</label></li>
+            <li><label><input type="checkbox" name="Veteran" /> Veteran</label></li>
+            <li><label><input type="checkbox" name="Parent" /> Parent</label></li>
+            <li><label><input type="checkbox" name="I prefer not to answer" /> I prefer not to answer</label></li>
+          </ul>
+        </div>
+      </li>
     </ul>
   </body>
 </html>

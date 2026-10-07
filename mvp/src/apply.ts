@@ -350,6 +350,36 @@ export function isDisciplineLabel(labelLower: string): boolean {
 }
 
 /**
+ * Groups checkboxes into the questions they belong to.
+ *
+ * A shared `name` is the HTML way to say "these belong together" and is what
+ * Lever does. Ashby does not: it names each box after its own label
+ * ( name="Tuesday through Saturday" ), so grouping on name alone put every
+ * box in a group of one and the whole feature bailed before any other check.
+ * Measured on a live Ashby posting whose required "Please select your
+ * preferred working shift" question was left for the candidate.
+ *
+ * Falling back to the shared question is safe because the question is what
+ * the group IS - two boxes that resolved to the same question are the same
+ * question - and isAnswerableCheckboxGroup still judges the result.
+ */
+export function groupCheckboxes(fields: DiscoveredField[]): Map<string, DiscoveredField[]> {
+  const candidates = fields.filter((f) => f.type === "checkbox" && !f.skipAlways);
+  const nameCounts = new Map<string, number>();
+  for (const f of candidates) if (f.nameAttr) nameCounts.set(f.nameAttr, (nameCounts.get(f.nameAttr) ?? 0) + 1);
+
+  const groups = new Map<string, DiscoveredField[]>();
+  for (const field of candidates) {
+    const sharedName = !!field.nameAttr && (nameCounts.get(field.nameAttr) ?? 0) > 1;
+    const key = sharedName ? `name:${field.nameAttr}` : field.groupQuestion ? `q:${field.groupQuestion}` : "";
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(field);
+  }
+  return groups;
+}
+
+/**
  * True when a "select all that apply" checkbox group may be answered.
  *
  * Exported and pure for the same reason isTickableAcknowledgement is:
@@ -379,11 +409,30 @@ export function isAnswerableCheckboxGroup(
   if (!question) return false;
   // The "question" is just one of the options repeated back.
   if (members.some((m) => m.label.trim() === question)) return false;
-  // A real one reads as a question or an instruction to pick several.
-  if (!/\?/.test(question) && !/select (all|one|any)|check all|that apply|choose all/i.test(question)) return false;
+  // A real one reads as a question, or as an instruction to pick.
+  //
+  // The opener is anchored rather than matched anywhere in the text, which
+  // is the difference between an instruction and a passing mention. "Please
+  // select your preferred working shift" is an instruction - a live Ashby
+  // question that this refused. "If Yes, select the government agency or
+  // department." merely contains the word, is conditional on another
+  // answer, and stays refused.
+  const asksForAPick =
+    /\?/.test(question) ||
+    /select (all|one|any)|check all|that apply|choose all/i.test(question) ||
+    /^\s*(please\s+)?(select|choose|check|pick)\b/i.test(question);
+  if (!asksForAPick) return false;
   // Never a protected category, and never anything that reads as consent -
   // both stay exactly as restricted as they are one box at a time.
-  if (SENSITIVE_RE.test(question.toLowerCase())) return false;
+  //
+  // The OPTIONS are searched as well as the question, because that is where
+  // a protected category usually hides. Measured on a live Ashby posting:
+  // "Which of the following communities do you belong to? Please select all
+  // that apply." contains no sensitive word at all, while its options are
+  // "Person with disability", "Neurodivergent", "Veteran", "Parent",
+  // "Refugee or immigrant". Judging the question alone would have let a
+  // model tick any of those about someone.
+  if (SENSITIVE_RE.test([question, ...members.map((m) => m.label)].join(" ").toLowerCase())) return false;
   if (CONSENT_RE.test(question.toLowerCase()) || isStandardRecruitmentConsent(question)) return false;
   return true;
 }
@@ -2706,12 +2755,22 @@ export async function fillCurrentPage(
   // design. Everything the existing checkbox rules refuse still runs first:
   // sensitive categories, self-identify groups, broader-scope consent.
   const checkboxGroupMembersBySelector = new Map<string, DiscoveredField[]>();
-  const checkboxGroups = new Map<string, DiscoveredField[]>();
-  for (const field of fields) {
-    if (field.type !== "checkbox" || !field.nameAttr || field.skipAlways) continue;
-    if (!checkboxGroups.has(field.nameAttr)) checkboxGroups.set(field.nameAttr, []);
-    checkboxGroups.get(field.nameAttr)!.push(field);
-  }
+  // Grouped by a SHARED name where there is one, and by the shared question
+  // otherwise.
+  //
+  // A shared `name` is the HTML way to say "these belong together" and is
+  // what Lever does. Ashby does not: it names each box after its own label
+  // ( name="Tuesday through Saturday" ), so grouping on name alone put every
+  // box in a group of one and the whole feature bailed before any other
+  // check. Measured on a live Ashby posting whose required "Please select
+  // your preferred working shift" question was left for the candidate.
+  //
+  // Falling back to the question is safe because the question is what the
+  // group is anyway - two boxes that resolved to the same question ARE the
+  // same question - and everything isAnswerableCheckboxGroup refuses still
+  // runs afterwards.
+  const checkboxGroups = groupCheckboxes(fields);
+
   for (const members of checkboxGroups.values()) {
     if (!isAnswerableCheckboxGroup(members)) continue;
     const question = members[0].groupQuestion;
