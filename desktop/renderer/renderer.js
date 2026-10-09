@@ -139,14 +139,18 @@ function renderSuggestions(payload) {
   list.innerHTML = "";
   if (!payload || !payload.suggestions || payload.suggestions.length === 0) {
     $("suggestMeta").textContent = "";
-    $("suggestNote").textContent =
-      "Nothing on this board looked like a fit — see the log below for how far it got.";
+    $("suggestNote").textContent = payload && payload.coverageShortfall
+      ? `Nothing matched — but ${payload.coverageShortfall} Try the board's own filters to narrow it first.`
+      : "Nothing on this board looked like a fit — see the log below for how far it got.";
     return;
   }
   const s = payload.suggestions;
   const overBar = s.filter((x) => x.meetsBar).length;
-  $("suggestMeta").textContent = `${payload.scanned} scanned · ${payload.opened} read in full`;
+  $("suggestMeta").textContent =
+    `${payload.scanned} scanned · ${payload.opened} read in full` +
+    (payload.coverageShortfall ? ` · of ${payload.statedTotal} on the board` : "");
   $("suggestNote").textContent =
+    (payload.coverageShortfall ? `Partial board: ${payload.coverageShortfall} ` : "") +
     `${s.length} ranked best-first, ${overBar} clearing your score bar. ` +
     `Scores are a judgement call, not a measurement — read the reasoning before queueing anything.`;
 
@@ -411,7 +415,8 @@ function renderReport(r, { index, status, url }) {
       `<div class="title"><span class="pill">${index + 1} of ${queueTotal}</span> ` +
       `Job board<span class="tag ai">${r.suggestions.length} suggestion${r.suggestions.length === 1 ? "" : "s"}</span></div>` +
       `<div class="meta">${esc(url)}</div>` +
-      `<div class="meta">${r.scanned} postings scanned · ${r.opened} read in full. Nothing was filled in — pick the ones worth applying to.</div>`;
+      `<div class="meta">${r.scanned} postings scanned · ${r.opened} read in full. Nothing was filled in — pick the ones worth applying to.</div>` +
+      (r.coverageShortfall ? `<div class="meta warn">Partial board: ${esc(r.coverageShortfall)}</div>` : "");
     card.appendChild(head);
     card.appendChild(suggestionList(r.suggestions));
     $("results").appendChild(card);

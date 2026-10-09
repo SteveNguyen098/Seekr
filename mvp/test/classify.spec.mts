@@ -9,7 +9,7 @@
  *   npm run test:classify
  */
 import { chromium } from "playwright";
-import { boardPageUrl, classifyUrl, listJobs } from "../src/scrape.js";
+import { boardPageUrl, classifyUrl, coverageShortfall, listJobs } from "../src/scrape.js";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -137,7 +137,7 @@ for (const c of CASES) {
 {
   console.log("\nlistJobs - opaque-id board");
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  const jobs = await listJobs(page, url("opaque-board/index.html"));
+  const { jobs } = await listJobs(page, url("opaque-board/index.html"));
   await page.close();
 
   const checks: [string, boolean, string][] = [
@@ -146,6 +146,70 @@ for (const c of CASES) {
     ["location is the second field, not the department", jobs[0]?.location === "Los Angeles", jobs[0]?.location ?? ""],
     ["every posting has a location", jobs.every((j) => !!j.location.trim()), ""],
     ["the id-less 'About us' link was not counted", jobs.every((j) => !/board\.html/.test(j.url)), ""],
+  ];
+  for (const [name, ok, detail] of checks) {
+    ok ? passed++ : failed++;
+    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${ok ? "" : ` — ${detail}`}`);
+  }
+}
+
+// A board whose cards carry responsive duplicate markup, and whose
+// accessibility skip-link targets a URL that satisfies the job-link filter.
+// Both were measured on a live board; both are reproduced structurally here
+// rather than by hostname.
+{
+  console.log("\nlistJobs - responsive cards and a skip-link");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  // Loaded WITH a query string, which is what makes the "Clear filters"
+  // link a same-page link that differs only by query - the shape that got
+  // through a whole-URL comparison on the live board.
+  const listing = await listJobs(page, url("careers/open-roles.html") + "?location=GA");
+  await page.close();
+  const jobs = listing.jobs;
+  const titles = jobs.map((j) => j.title);
+
+  const checks: [string, boolean, string][] = [
+    ["all three postings found", jobs.length === 3, `got ${jobs.length}: ${titles.join(" | ")}`],
+    [
+      "THE BUG: the skip-link is not a posting",
+      jobs.every((j) => !/Skip to main/i.test(j.title)),
+      titles.join(" | "),
+    ],
+    [
+      "THE BUG: 'Clear filters' is not a posting - it differs only by query string",
+      jobs.every((j) => !/Clear filters/i.test(j.title)),
+      titles.join(" | "),
+    ],
+    [
+      "THE BUG: the title is not the card read twice",
+      titles.includes("Senior Data Analyst"),
+      titles.join(" | "),
+    ],
+    [
+      "the department is not welded onto the title",
+      jobs.every((j) => !/Analytics|Implementation$|Engineering$/.test(j.title)),
+      titles.join(" | "),
+    ],
+    [
+      "the hidden narrow variant contributes nothing",
+      jobs.every((j) => !/•/.test(j.title) && !/•/.test(j.location)),
+      titles.join(" | "),
+    ],
+    [
+      "location comes from the card's last field",
+      jobs[0]?.location === "Remote (United States)",
+      jobs[0]?.location ?? "",
+    ],
+    [
+      "the board's own stated total is read",
+      listing.statedTotal === 48,
+      String(listing.statedTotal),
+    ],
+    [
+      "a shortfall against that total is reported",
+      /48/.test(coverageShortfall(listing.rows, listing.statedTotal) ?? ""),
+      String(coverageShortfall(listing.rows, listing.statedTotal)),
+    ],
   ];
   for (const [name, ok, detail] of checks) {
     ok ? passed++ : failed++;

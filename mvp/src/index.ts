@@ -8,7 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { loadResume } from "./resume.js";
-import { listJobs, getJobDescription, classifyUrl } from "./scrape.js";
+import { coverageShortfall, listJobs, getJobDescription, classifyUrl } from "./scrape.js";
 import { passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
 import { MAX_SHORTLIST, rankJobs, triageTitles, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
@@ -302,8 +302,15 @@ try {
     best = { job: { title, url: jobUrl, location: "", descriptionText: text }, score: 100, reasoning: "direct --job-url, no ranking performed" };
   } else {
     console.log(`\nScraping career page: ${careerUrl}`);
-    const allJobs = await listJobs(page, careerUrl!);
+    const listing = await listJobs(page, careerUrl!);
+    const allJobs = listing.jobs;
     console.log(`  -> found ${allJobs.length} postings`);
+
+    // Disclosed rather than acted on. The failure this replaces was a board
+    // advertising 625 roles, 26 of which were reachable, producing a single
+    // suggestion that read as a verdict on the company.
+    const shortfall = coverageShortfall(listing.rows, listing.statedTotal);
+    if (shortfall) console.log(`  !! ${shortfall}`);
 
     // A pinned result for this exact board + resume + criteria.
     //
@@ -417,6 +424,11 @@ try {
         board: careerUrl,
         scanned: allJobs.length,
         opened: candidates.length,
+        // Carried into the payload, not just printed, so the shell can say
+        // the same thing the CLI says instead of presenting a partial scan
+        // as a finished one.
+        statedTotal: listing.statedTotal,
+        coverageShortfall: shortfall,
         pinnedAt: new Date().toISOString(),
         suggestions,
       };

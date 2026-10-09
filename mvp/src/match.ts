@@ -114,7 +114,10 @@ export async function triageTitles(
 
   const message = await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 2048,
+    // Same exposure as ranking, one stage earlier: the shortlist is capped
+    // at MAX_SHORTLIST entries, each a index plus a short "why", so the
+    // budget is sized to a full shortlist rather than to a typical one.
+    max_tokens: Math.min(16384, 1024 + MAX_SHORTLIST * 160),
     tools: [TRIAGE_TOOL],
     tool_choice: { type: "tool", name: "shortlist_titles" },
     messages: [
@@ -151,6 +154,18 @@ export async function triageTitles(
     picked.push({ job: jobs[index], why });
     if (picked.length >= MAX_SHORTLIST) break;
   }
+
+  // An empty shortlist is a legitimate answer for a board with nothing
+  // suitable on it - but it is NOT legitimate when the response was cut
+  // off, and the two are indistinguishable from the shortlist alone. Left
+  // unchecked, a truncated triage reports "0 worth opening", which reads as
+  // a verdict on the company rather than as a failed call.
+  if (picked.length === 0 && message.stop_reason === "max_tokens") {
+    throw new Error(
+      `Claude's triage of ${jobs.length} title(s) was cut off by the output limit, so none of it could be read. ` +
+        `This is a size problem, not a board with nothing on it.`
+    );
+  }
   return picked;
 }
 
@@ -185,7 +200,18 @@ export async function rankJobs(
 
   const message = await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 2048,
+    // Sized to the shortlist rather than fixed, because the fixed 2048 was
+    // only ever enough by accident. THE FAILURE: once board coverage was
+    // fixed, triage had 348 titles to choose from instead of 26 and filled
+    // the shortlist to all 20 - and every ranking came back unusable. The
+    // response was being truncated mid-tool-call, so `rankings` never
+    // parsed, and the error said "transient response problem", which sent
+    // the user to retry a call that could not succeed.
+    //
+    // One ranking is a URL, a score and a sentence or two of reasoning;
+    // 220 tokens each is roughly double what they measure, and the floor
+    // covers the tool-call scaffolding.
+    max_tokens: Math.min(16384, 1024 + candidates.length * 220),
     tools: [RANK_TOOL],
     tool_choice: { type: "tool", name: "rank_jobs" },
     messages: [
@@ -236,6 +262,15 @@ export async function rankJobs(
   // empty list would show up as "0 postings read in full" after the work
   // had already been done.
   if (results.length === 0 && candidates.length > 0) {
+    // Truncation is named separately because the advice differs: retrying
+    // a call that ran out of output budget just fails again, which is
+    // exactly what "try the scan again" told the user to do.
+    if (message.stop_reason === "max_tokens") {
+      throw new Error(
+        `Claude's ranking of ${candidates.length} posting(s) was cut off by the output limit, so none of it could be read. ` +
+          `This is a size problem, not a transient one - retrying unchanged will fail the same way.`
+      );
+    }
     throw new Error(
       `Claude returned no usable rankings for ${candidates.length} posting(s). This is a transient response problem, not a verdict on the board - try the scan again.`
     );

@@ -1,10 +1,48 @@
 import type { Page, Frame } from "playwright";
 import { APPLY_CTA_RE } from "./apply.js";
+import { readSearchIndex, watchForSearchIndex } from "./searchIndex.js";
 
 export interface JobPosting {
   title: string;
   url: string;
   location: string;
+}
+
+/**
+ * What a board scan found, alongside what the board claims to hold, so a
+ * shortfall between the two can be disclosed instead of passing silently.
+ */
+export interface BoardListing {
+  jobs: JobPosting[];
+  /**
+   * Entries enumerated before location variants were merged - what the
+   * board's own total is counting. Equal to jobs.length for every DOM
+   * scraper; higher for a search index that lists a role once per location.
+   */
+  rows: number;
+  /** Null when the board states no total of its own. */
+  statedTotal: number | null;
+}
+
+/**
+ * A sentence describing a coverage shortfall, or null when there is none.
+ *
+ * Compares `rows` and not the posting count, because those are the two
+ * numbers that mean the same thing. The measured index reports 625 rows for
+ * 348 distinct postings, so a complete read of that board would otherwise
+ * announce a 277-posting shortfall - a false alarm on the very fix meant to
+ * remove the real one.
+ *
+ * The 10% tolerance absorbs a board whose stated total is slightly stale or
+ * counts something marginally different; a scraper gap of the kind worth
+ * reporting is not a rounding error (the real one was 4%).
+ */
+export function coverageShortfall(rows: number, statedTotal: number | null): string | null {
+  if (statedTotal === null || rows >= statedTotal * 0.9) return null;
+  return (
+    `this board says it has ${statedTotal} - only ${rows} could be read, ` +
+    `so the ranking below saw part of the board, not all of it.`
+  );
 }
 
 const NAV_WORDS = new Set([
@@ -56,18 +94,23 @@ export function boardPageUrl(careerUrl: string, pageNum: number): string {
  * page contributing no NEW urls ends one that clamps out-of-range requests
  * to the last page instead - which would otherwise repeat forever.
  */
-export async function listJobs(page: Page, careerUrl: string): Promise<JobPosting[]> {
-  if (!/greenhouse\.io/.test(careerUrl)) return listJobsOnePage(page, careerUrl);
+export async function listJobs(page: Page, careerUrl: string): Promise<BoardListing> {
+  if (!/greenhouse\.io/.test(careerUrl)) {
+    const { jobs, rows } = await listJobsOnePage(page, careerUrl);
+    return { jobs, rows, statedTotal: await statedTotal(page) };
+  }
 
   const collected: JobPosting[] = [];
   const seenUrls = new Set<string>();
+  let rows = 0;
 
   for (let pageNum = 1; pageNum <= MAX_BOARD_PAGES; pageNum++) {
     const batch = await listJobsOnePage(page, boardPageUrl(careerUrl, pageNum));
-    if (batch.length === 0) break;
+    if (batch.jobs.length === 0) break;
+    rows += batch.rows;
 
     const before = seenUrls.size;
-    for (const job of batch) {
+    for (const job of batch.jobs) {
       if (seenUrls.has(job.url)) continue;
       seenUrls.add(job.url);
       collected.push(job);
@@ -75,22 +118,74 @@ export async function listJobs(page: Page, careerUrl: string): Promise<JobPostin
     if (seenUrls.size === before) break;
   }
 
-  return collected;
+  return { jobs: collected, rows, statedTotal: await statedTotal(page) };
+}
+
+/**
+ * How many postings the board says it has, when it says so at all.
+ *
+ * Exists because the expensive failure here is a SILENT shortfall. A board
+ * advertising "625 roles" that yields 26 of them produces a short, entirely
+ * plausible-looking shortlist, and the thing that looks wrong is the
+ * company's hiring rather than the scraper. Comparing what was collected
+ * against what the board claims about itself is the cheapest available
+ * check, and it needs no per-board knowledge.
+ *
+ * Reported, never acted on: it is a number the page wrote about itself, so
+ * it can be marketing copy, and callers treat a shortfall as something to
+ * disclose rather than as grounds to change what they do.
+ */
+export async function statedTotal(page: Page): Promise<number | null> {
+  const text = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 20000) ?? "")
+    .catch(() => "");
+  // The count and its noun, adjacent: "625 roles", "193 jobs",
+  // "41 roles across all departments in 3 locations".
+  const counts = [...text.matchAll(/\b(\d[\d,]{0,6})\s+(?:open\s+)?(?:roles?|jobs?|positions?|openings?)\b/gi)]
+    .map((m) => Number(m[1].replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!counts.length) return null;
+  // The largest claim on the page: a board states its total once, while
+  // smaller numbers beside it tend to be per-department or per-location
+  // breakdowns of that same total.
+  return Math.max(...counts);
 }
 
 /**
  * Layered strategy: try well-known ATS DOM patterns first (reliable), then
  * fall back to a generic heuristic for arbitrary career pages.
  */
-async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPosting[]> {
-  await page.goto(careerUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
-    page.goto(careerUrl, { waitUntil: "load", timeout: 30000 })
-  );
+async function listJobsOnePage(
+  page: Page,
+  careerUrl: string
+): Promise<{ jobs: JobPosting[]; rows: number }> {
+  // Attached before navigation, because the board's search query fires
+  // during page load - a listener added afterwards sees nothing.
+  const searchIndex = watchForSearchIndex(page);
+  try {
+    await page.goto(careerUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
+      page.goto(careerUrl, { waitUntil: "load", timeout: 30000 })
+    );
+
+    // Preferred over anything in the DOM when it is available: a board that
+    // answers from a search index renders only the first batch of hits, so
+    // the DOM is a fraction of the board by construction, not by accident.
+    const endpoint = searchIndex.found();
+    if (endpoint) {
+      const fromIndex = await readSearchIndex(page, endpoint);
+      // Falls through to DOM scraping on an empty read rather than
+      // reporting an empty board: an index whose fields are named
+      // differently yields no postings here, and the DOM is still there.
+      if (fromIndex.postings.length) return { jobs: fromIndex.postings, rows: fromIndex.rows };
+    }
+  } finally {
+    searchIndex.stop();
+  }
 
   const isGreenhouse = /greenhouse\.io/.test(page.url());
   const isLever = /lever\.co/.test(page.url());
 
-  let raw: { title: string; href: string }[] = [];
+  let raw: { title: string; href: string; location: string }[] = [];
 
   if (isGreenhouse) {
     const parsed = await page.$$eval("a[href*='/jobs/']", (els) =>
@@ -110,7 +205,7 @@ async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPostin
       seen.add(href);
       jobs.push({ title, url: href, location });
     }
-    return jobs;
+    return { jobs, rows: jobs.length };
   } else if (isLever) {
     const parsed = await page.$$eval("a.posting-title", (els) =>
       els.map((el) => {
@@ -144,13 +239,54 @@ async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPostin
       seen.add(href);
       jobs.push({ title, url: href, location });
     }
-    return jobs;
+    return { jobs, rows: jobs.length };
   } else {
-    raw = await page.$$eval("a[href]", (els) =>
-      els
-        .map((el) => ({ title: el.textContent?.trim() ?? "", href: (el as HTMLAnchorElement).href }))
+    raw = await page.$$eval("a[href]", (els) => {
+      const herePage = location.origin + location.pathname;
+      return els
+        .map((el) => {
+          // innerText, not textContent, because a responsive card renders
+          // its contents TWICE - once for wide screens and once for narrow,
+          // with CSS hiding whichever does not apply. textContent reads
+          // both, which is how a title arrived as "Account Executive,
+          // Broker Channel (Arkansas) SalesAR Account Executive, Broker
+          // Channel (Arkansas) Sales - AR" and got triaged in that state.
+          // innerText honours the hiding, so only the rendered variant is
+          // read, and its line breaks separate the card's own fields.
+          const lines = ((el as HTMLElement).innerText || el.textContent || "")
+            .split("\n")
+            .map((line) => line.replace(/\s+/g, " ").trim())
+            .filter(Boolean);
+          return {
+            title: lines[0] ?? "",
+            href: (el as HTMLAnchorElement).href,
+            // The card's last line is its location when it has one; a plain
+            // title-only link yields no second line and so no location.
+            location: lines.length > 1 ? lines[lines.length - 1] : "",
+          };
+        })
         .filter((j) => /\/(job|jobs|position|positions|opening|openings|careers)\/[\w-]+/i.test(j.href))
-    );
+        // A link into the CURRENT page is never a posting on it. Two of
+        // these were measured on one board: the accessibility skip-link at
+        // "/careers/open-roles#main-content", and - on the filtered view of
+        // the same board - a "Clear filters" link back to
+        // "/careers/open-roles". Both satisfy the filter above, so both
+        // were scraped as jobs and ranked.
+        //
+        // Compared on origin + path, deliberately ignoring query and
+        // fragment: "Clear filters" differs from the current URL only by
+        // its query string, so comparing whole URLs let it through.
+        // Dropped by target rather than by link text, so this holds for
+        // whatever a given board calls those links.
+        .filter((j) => {
+          try {
+            const target = new URL(j.href);
+            return target.origin + target.pathname !== herePage;
+          } catch {
+            return true;
+          }
+        });
+    });
     // Nothing matched, but the page may still list postings behind opaque
     // ids that name no concept at all.
     //
@@ -195,22 +331,22 @@ async function listJobsOnePage(page: Page, careerUrl: string): Promise<JobPostin
         seenOpaque.add(href);
         opaqueJobs.push({ title, url: href, location });
       }
-      if (opaqueJobs.length) return opaqueJobs;
+      if (opaqueJobs.length) return { jobs: opaqueJobs, rows: opaqueJobs.length };
     }
   }
 
   const seen = new Set<string>();
   const jobs: JobPosting[] = [];
-  for (const { title, href } of raw) {
+  for (const { title, href, location } of raw) {
     const cleanTitle = title.trim();
     if (!cleanTitle || cleanTitle.length < 3 || cleanTitle.length > 150) continue;
     if (NAV_WORDS.has(cleanTitle.toLowerCase())) continue;
     if (seen.has(href)) continue;
     seen.add(href);
-    jobs.push({ title: cleanTitle, url: href, location: "" });
+    jobs.push({ title: cleanTitle, url: href, location });
   }
 
-  return jobs;
+  return { jobs, rows: jobs.length };
 }
 
 /**

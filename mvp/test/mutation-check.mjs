@@ -14,6 +14,7 @@ import fs from "node:fs";
 const SOURCES = {
   apply: "src/apply.ts",
   scrape: "src/scrape.ts",
+  searchIndex: "src/searchIndex.ts",
 };
 const ORIGINAL = Object.fromEntries(Object.entries(SOURCES).map(([k, p]) => [k, fs.readFileSync(p, "utf-8")]));
 
@@ -22,6 +23,7 @@ const SPECS = {
   fields: "test/fixtures.spec.mts",
   classify: "test/classify.spec.mts",
   labels: "test/labels.spec.mts",
+  searchindex: "test/searchindex.spec.mts",
 };
 
 const MUTATIONS = [
@@ -657,6 +659,110 @@ const MUTATIONS = [
     fixture: "bamboohr-file",
     from: 'const isFileChrome = type === "file" && /no file selected/i.test(text);',
     to: "const isFileChrome = false;",
+  },
+
+  // ---- board coverage: a partial scan must not pass as a complete one ----
+  {
+    bug: "read a card with textContent, so responsive duplicate markup is read twice",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: 'const lines = ((el as HTMLElement).innerText || el.textContent || "")',
+    to: 'const lines = (el.textContent || "")',
+  },
+  {
+    bug: "stop excluding links into the current page, so the skip-link is a posting",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "            return target.origin + target.pathname !== herePage;",
+    to: "            return true;",
+  },
+  {
+    // The other half of the same filter: "Clear filters" is a same-page
+    // link that differs only by query string, so comparing whole URLs -
+    // query included - let it through as a 42nd posting among 41.
+    bug: "compare whole URLs, so a same-page link with a different query passes",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "            return target.origin + target.pathname !== herePage;",
+    to: "            return target.href !== location.href;",
+  },
+  {
+    bug: "take no location from the card, as the generic branch used to",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "location: lines.length > 1 ? lines[lines.length - 1] : \"\",",
+    to: 'location: "",',
+  },
+  {
+    bug: "stop reading what the board says its total is",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: ".filter((n) => Number.isFinite(n) && n > 0);",
+    to: ".filter(() => false);",
+  },
+  {
+    bug: "never report a shortfall, so 26 of 625 passes silently",
+    source: "scrape",
+    spec: "searchindex",
+    fixture: "",
+    from: "if (statedTotal === null || rows >= statedTotal * 0.9) return null;",
+    to: "if (true) return null;",
+  },
+  {
+    bug: "keep only the location a role was first indexed under",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "for (const location of locations) existing.locations.add(location);",
+    to: "void locations;",
+  },
+  {
+    bug: "take the multi-query wildcard as an index name",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "const fromPath = url.match(/\\/1\\/indexes\\/([^/*?]+)\\//i)?.[1];",
+    to: "const fromPath = url.match(/\\/1\\/indexes\\/([^/]+)\\//i)?.[1];",
+  },
+  {
+    bug: "accept a hit whose url is relative, queueing a link that cannot be opened",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "if (!/^https?:\\/\\//i.test(url)) return null;",
+    to: "if (!url) return null;",
+  },
+  {
+    // The bug this module shipped with: an unanchored "product" matched
+    // inside "careers_en-US_production", rejecting the one index that
+    // mattered, so the reader silently never ran.
+    bug: "match a disqualifying word inside a longer one again",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "  /(^|[^a-z])(blog|article|glossary|help|support|product|pricing|customer|event|webinar|doc|docs)([^a-z]|$)/i;",
+    to: "  /blog|article|glossary|help|support|product|pricing|customer|event|webinar|doc|docs/i;",
+  },
+  {
+    bug: "treat a facet-count query as the board's view, discarding its filters",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "  if (candidate.hitsPerPage === 0) return current;",
+    to: "  if (false) return current;",
+  },
+  {
+    bug: "keep the board's FIRST query, so filters applied later never arrive",
+    source: "searchIndex",
+    spec: "searchindex",
+    fixture: "",
+    from: "  return {\n    url: candidate.url,\n    indexName: candidate.indexName,\n    facetFilters: candidate.facetFilters,\n    filters: candidate.filters,\n  };",
+    to: "  return current ?? {\n    url: candidate.url,\n    indexName: candidate.indexName,\n    facetFilters: candidate.facetFilters,\n    filters: candidate.filters,\n  };",
   },
 ];
 

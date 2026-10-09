@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  A board whose cards render their contents TWICE - once for wide screens
+  and once for narrow - with CSS hiding whichever does not apply, plus the
+  accessibility skip-link that every board carries.
+
+  Both reproduce bugs measured on a live board (Rippling's):
+
+  1. textContent reads BOTH responsive variants, so a title arrived as
+     "Senior Data Analyst Analytics Remote (United States) Senior Data
+     Analyst Analytics - Remote (United States)" and was triaged in that
+     state. The variants are flex rows here because that is what makes
+     innerText break them into lines, which is also where the card's own
+     title/department/location boundaries come from.
+
+  2. This file sits at careers/open-roles.html, so the skip-link's target
+     resolves to a URL containing "careers/open-roles" - which satisfies
+     the generic job-link filter. "Skip to main content" was being scraped
+     as a posting and sent to be ranked.
+
+  It also states a total far above what it lists, which is the shape of the
+  silent shortfall: 48 claimed, 3 listed.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Open roles</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; }
+    .card { display: block; border-bottom: 1px solid #ddd; padding: 12px 0; text-decoration: none; color: inherit; }
+    /* The wide variant is a flex row, so each field is its own line box -
+       which is what gives innerText its line breaks. */
+    .wide { display: flex; gap: 24px; justify-content: space-between; }
+    .narrow { display: none; }
+    @media (max-width: 767px) {
+      .wide { display: none; }
+      .narrow { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <a href="#main-content">Skip to main content</a>
+
+  <header>
+    <h1>Open roles</h1>
+    <p>48 roles across all departments in all locations</p>
+    <!--
+      Measured on the filtered view of the live board: a "Clear filters"
+      link back to the unfiltered board differs from the current URL only by
+      its query string, so comparing whole URLs let it through and it was
+      scraped as a 42nd posting among 41.
+    -->
+    <a href="open-roles.html">Clear filters</a>
+  </header>
+
+  <main id="main-content">
+    <a class="card" href="../jobs/senior-data-analyst.html">
+      <div class="wide">
+        <span>Senior Data Analyst</span>
+        <span>Analytics</span>
+        <span>Remote (United States)</span>
+      </div>
+      <div class="narrow">
+        <span>Senior Data Analyst</span>
+        <span>Analytics &bull; Remote (United States)</span>
+      </div>
+    </a>
+
+    <a class="card" href="../jobs/implementation-specialist.html">
+      <div class="wide">
+        <span>Implementation Specialist, Payroll</span>
+        <span>Implementation</span>
+        <span>Austin, TX</span>
+      </div>
+      <div class="narrow">
+        <span>Implementation Specialist, Payroll</span>
+        <span>Implementation &bull; Austin, TX</span>
+      </div>
+    </a>
+
+    <a class="card" href="../jobs/staff-engineer.html">
+      <div class="wide">
+        <span>Staff Engineer, Platform</span>
+        <span>Engineering</span>
+        <span>Bangalore, India</span>
+      </div>
+      <div class="narrow">
+        <span>Staff Engineer, Platform</span>
+        <span>Engineering &bull; Bangalore, India</span>
+      </div>
+    </a>
+  </main>
+
+  <footer>
+    <a href="/about.html">About us</a>
+    <a href="/privacy.html">Privacy</a>
+  </footer>
+</body>
+</html>
