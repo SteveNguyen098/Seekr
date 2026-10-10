@@ -307,6 +307,33 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "rippling-phone-code-prefilled.html",
+    bug: "a required country code that was already set to '+1 US' was reported as a blocking unlabelled field",
+    check(fields, t) {
+      // Found by its own generated name, which is what the selector keys
+      // on - the id is preferred against, since Rippling regenerates ids.
+      const code = fields.find((f) => f.selector.includes("2VLpZ9Pi3ed"));
+      t.ok("the country-code control is discovered", !!code);
+      t.is("'Search' is still refused as its label", code?.label, "");
+      t.is("the form marks it required", code?.required, true);
+      t.is(
+        "THE FIX: what it already holds is carried through, so it need not be reported as unanswered",
+        code?.prefilled,
+        "+1 US"
+      );
+
+      // The number half must still be labelled, and must NOT be mistaken
+      // for the prefilled case - it is genuinely empty and does need
+      // filling.
+      const phone = fields.find((f) => /phone number/i.test(f.label));
+      t.is("the number input keeps its real label", phone?.label, "Phone number");
+      t.is("...and is correctly seen as empty", phone?.prefilled, "");
+
+      const first = fields.find((f) => /first name/i.test(f.label));
+      t.is("an ordinary empty field reports no prefilled value", first?.prefilled, "");
+    },
+  },
+  {
     file: "custom-widget-shapes.html",
     bug: "decorative selects, button-driven yes/no questions and tel country lists were all mishandled",
     check(fields, t) {

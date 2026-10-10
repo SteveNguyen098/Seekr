@@ -23,6 +23,7 @@ import {
   isDisciplineLabel,
   isSchoolLabel,
   isStandardRecruitmentConsent,
+  sameIgnoringFormatting,
   isTickableAcknowledgement,
   searchSeed,
   unbackedInstitution,
@@ -648,6 +649,44 @@ for (const c of INSTITUTION) {
   const ok = got === c.want;
   ok ? pass++ : fail++;
   console.log(`  ${ok ? "PASS" : "FAIL"}  rejected=${String(got).padEnd(5)} ${JSON.stringify(c.value)}`);
+  if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
+}
+
+// A widget that REFORMATS what it was given has accepted it. Reading that
+// as a revert reported every application in a ten-job batch as "not ready
+// to submit" and pointed the user at fields that were already correct.
+const REFORMATS: { entered: string; persisted: string; want: boolean; why: string }[] = [
+  {
+    entered: "(404) 769-1638",
+    persisted: "404-769-1638",
+    want: true,
+    why: "THE BUG: measured live on Rippling's ATS phone field - the number was in the form",
+  },
+  { entered: "76000", persisted: "76,000", want: true, why: "the earlier Workable salary case, still covered" },
+  { entered: "4047691638", persisted: "404-769-1638", want: true, why: "digits in, formatted out" },
+  { entered: "steven@example.com", persisted: "steven@example.com", want: true, why: "an untouched value still matches" },
+  { entered: "Decatur, Georgia", persisted: "decatur, georgia", want: true, why: "case alone is not a revert" },
+
+  // The direction that must NOT be weakened: these are real failures and
+  // have to keep failing, or the check stops being worth making.
+  { entered: "(404) 769-1638", persisted: "", want: false, why: "a genuine revert lands on empty" },
+  {
+    entered: "Atlanta",
+    persisted: "Atlanta, GA, USA",
+    want: false,
+    why: "an autocomplete that swaps in different text is not a reformat",
+  },
+  { entered: "4047691638", persisted: "4047691639", want: false, why: "a different number is not a reformat" },
+  { entered: "76000", persisted: "7600", want: false, why: "a truncated value is not a reformat" },
+  { entered: "Yes", persisted: "No", want: false, why: "an opposite answer is not a reformat" },
+];
+
+console.log("\nsameIgnoringFormatting");
+for (const c of REFORMATS) {
+  const got = sameIgnoringFormatting(c.persisted, c.entered);
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${String(got).padEnd(5)} ${JSON.stringify(c.entered)} -> ${JSON.stringify(c.persisted)}`);
   if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
 }
 

@@ -661,6 +661,22 @@ const MUTATIONS = [
     to: "const isFileChrome = false;",
   },
 
+  {
+    // Both halves of the Rippling phone widget produced a false "needs
+    // you" on every application in a ten-job batch.
+    bug: "read a widget's reformat as a revert again",
+    spec: "labels",
+    fixture: "",
+    from: '  const bare = (s: string) => s.toLowerCase().replace(/[\\s()\\-.,+]/g, "");',
+    to: '  const bare = (s: string) => s.replace(/,/g, "").trim();',
+  },
+  {
+    bug: "stop carrying what a field already holds, so a prefilled required field looks unanswered",
+    fixture: "rippling-phone",
+    from: "        const prefilled = tag === \"SELECT\" || tag === \"INPUT\" || tag === \"TEXTAREA\"\n          ? (el as HTMLInputElement).value || \"\"\n          : \"\";",
+    to: '        const prefilled = "";',
+  },
+
   // ---- board coverage: a partial scan must not pass as a complete one ----
   {
     bug: "read a card with textContent, so responsive duplicate markup is read twice",

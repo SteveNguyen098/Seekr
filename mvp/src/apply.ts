@@ -79,6 +79,13 @@ export interface DiscoveredField {
   /** Human-readable reason for skipAlways, surfaced in the report. */
   skipReason: string;
   /**
+   * The value the field already held at discovery, before anything was
+   * filled. Only used to tell "this needs an answer" apart from "this
+   * already has one", which is the difference between a report the user
+   * must act on and a false alarm.
+   */
+  prefilled: string;
+  /**
    * True when aria-labelledby resolves to a *visible* element. Marks a
    * legitimately-hidden control (a real input styled behind a visible
    * clickable partner - the pattern checkField() handles). Exempts the
@@ -1350,7 +1357,18 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // clicked. Empty here means stableRadioSelector falls back to the
         // id, which is exactly right: there is no stable value to key on.
         const radioValue = type === "radio" ? el.getAttribute("value") || "" : "";
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "" };
+        // What the field ALREADY holds before anything is filled. A form
+        // can arrive with a required field correctly prefilled, and
+        // reporting that as unanswered sends the user to fix something
+        // that is already right. Measured on Rippling's ATS: the phone
+        // widget's country-code combobox arrives set to "+1 US", is
+        // aria-required, and is labelled only "Search" - so it was
+        // reported as a blocking "no discoverable label" field on every
+        // application in a ten-job batch.
+        const prefilled = tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA"
+          ? (el as HTMLInputElement).value || ""
+          : "";
+        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "", prefilled };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -2536,6 +2554,31 @@ async function answerMultiSelectFallback(
   );
 }
 
+/**
+ * Whether a field holds what was entered, ignoring the characters widgets
+ * use to format rather than to mean: whitespace, brackets, dashes, dots,
+ * commas, plus.
+ *
+ * A reformat is a success, and it was being reported as a failure. Measured
+ * on a Workable salary field ("76000" persisting as "76,000") and then,
+ * much more expensively, on Rippling's ATS phone field ("(404) 769-1638"
+ * persisting as "404-769-1638"): every application in a ten-job batch came
+ * back as "not ready to submit", pointing the user at a field that already
+ * held the right number.
+ *
+ * Shared by the two places that make this comparison - the check right
+ * after filling and the re-check before the screenshot - because they were
+ * both wrong in the same way, and a rule written twice drifts.
+ *
+ * Not loose: the content still has to match. A genuine revert lands on "",
+ * which never matches a non-empty value, and an autocomplete that swaps in
+ * different text ("Atlanta" becoming "Atlanta, GA, USA") still fails.
+ */
+export function sameIgnoringFormatting(a: string, b: string): boolean {
+  const bare = (s: string) => s.toLowerCase().replace(/[\s()\-.,+]/g, "");
+  return bare(a) === bare(b);
+}
+
 interface FilledTextRecord {
   selector: string;
   label: string;
@@ -2612,16 +2655,9 @@ async function fillTextVerified(
       persisted = "";
     }
   }
-  // Some widgets auto-format a plain numeral as it's entered (a thousands
-  // separator inserted on input/blur) - confirmed live on a Workable salary
-  // field, where "76000" persisted correctly as "76,000" but the exact-match
-  // check below reported it as failed, with the same "select it manually"
-  // reason a genuinely-reverted custom dropdown gets. Stripping commas
-  // before comparing catches this real case without weakening the check for
-  // an actual revert (a truly-reset field lands on "", which still won't
-  // match after stripping).
-  const stripCommas = (s: string) => s.replace(/,/g, "").trim();
-  if (stripCommas(persisted) !== stripCommas(value)) {
+  // A widget that reformats what was entered has accepted it, not
+  // discarded it - see sameIgnoringFormatting.
+  if (!sameIgnoringFormatting(persisted, value)) {
     skipped.push({
       label,
       reason: `entered "${value}" but it did not persist (likely a custom dropdown - select it manually)`,
@@ -2629,8 +2665,12 @@ async function fillTextVerified(
     });
     return false;
   }
-  filled.push({ label, value, generated, lowConfidence: generated && lowConfidence });
-  filledSelectors?.push({ selector: usedSelector, label, value, required, filledIndex: filled.length - 1 });
+  // The value the FORM holds, not the one that was typed. They differ
+  // whenever a widget reformats, and the report is read as a record of what
+  // is in the application - so it should say "404-769-1638" when that is
+  // what the field now contains.
+  filled.push({ label, value: persisted, generated, lowConfidence: generated && lowConfidence });
+  filledSelectors?.push({ selector: usedSelector, label, value: persisted, required, filledIndex: filled.length - 1 });
   return true;
 }
 
@@ -3178,6 +3218,28 @@ export async function fillCurrentPage(
       continue;
     }
     if (!field.label) {
+      // A field with no label that ALREADY holds a value is not something
+      // the user has to fix, and calling it required-and-unfilled is worse
+      // than saying nothing: it is the difference between "this
+      // application is not ready to submit" and the truth.
+      //
+      // Measured on Rippling's ATS, where this fired on every application
+      // in a ten-job batch: the phone widget is two controls, and its
+      // country-code combobox arrives already set to "+1 US" while being
+      // aria-required and labelled only "Search" - a generic instruction
+      // word that is correctly refused as a label. Nothing was wrong with
+      // it, and nothing needed doing.
+      //
+      // Still recorded, because an unlabelled field is worth seeing; just
+      // not as a blocker.
+      if (field.prefilled.trim()) {
+        skipped.push({
+          label: field.selector,
+          reason: `no discoverable label, but it already holds "${field.prefilled.trim()}" - nothing to do`,
+          required: false,
+        });
+        continue;
+      }
       skipped.push({ label: field.selector, reason: "no discoverable label; left for manual review", required: field.required });
       continue;
     }
@@ -4209,17 +4271,17 @@ async function reverifyFilledTextFields(
   filled: FillReport["filled"],
   skipped: FillReport["skipped"]
 ): Promise<FillReport["filled"]> {
-  // Same auto-formatting-widget allowance as fillTextVerified above (see
-  // its comment) - without it, a field that auto-formats "76000" to
-  // "76,000" looks "reset" on every pass through here and gets a
-  // misleading "got reset before the screenshot" note despite never
-  // actually having changed.
-  const stripCommas = (s: string) => s.replace(/,/g, "").trim();
+  // Shares sameIgnoringFormatting with fillTextVerified, because this
+  // comparison was wrong in exactly the same way: a field that reformats
+  // what it was given looks "reset" on every pass through here and earns a
+  // "got reset before the screenshot" note despite holding the right value
+  // all along. Measured on Rippling's phone field, which turns
+  // "(404) 769-1638" into "404-769-1638".
   const toRemove = new Set<number>();
   for (const rec of filledSelectors) {
     let selector = rec.selector;
     const current = await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => undefined);
-    if (current !== undefined && stripCommas(current) === stripCommas(rec.value)) continue;
+    if (current !== undefined && sameIgnoringFormatting(current, rec.value)) continue;
 
     let refilled = await ctx.fill(selector, rec.value).then(() => true).catch(() => false);
     // Same staleness fillTextVerified() already retries around, showing up
@@ -4242,7 +4304,11 @@ async function reverifyFilledTextFields(
       }
     }
     const persisted =
-      refilled && stripCommas(await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => "")) === stripCommas(rec.value);
+      refilled &&
+      sameIgnoringFormatting(
+        await ctx.$eval(selector, (el) => (el as HTMLInputElement).value).catch(() => ""),
+        rec.value
+      );
     if (persisted) continue;
 
     toRemove.add(rec.filledIndex);

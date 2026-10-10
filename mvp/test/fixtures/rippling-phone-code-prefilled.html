@@ -1,0 +1,110 @@
+<!doctype html>
+<!--
+BUG: every application in a ten-job batch was reported as "not ready to
+submit" over two fields, and both reports were false.
+
+Confirmed live on Rippling's ATS. The phone field is TWO controls, and this
+reproduces the pair verbatim from a captured form:
+
+  1. A country-code combobox. It is aria-required, its only label is the
+     generic word "Search" - correctly refused as a label, since Rippling
+     reuses that string across unrelated questions (see
+     rippling-generic-label.html) - and it ARRIVES ALREADY SET to "+1 US".
+     Nothing was wrong with it and nothing needed doing, but having no
+     label and being required, it was reported as a blocking
+     "no discoverable label; left for manual review".
+
+  2. The number input itself, labelled through aria-labelledby. This one
+     auto-formats what it is given: "(404) 769-1638" becomes
+     "404-769-1638". The value HAD persisted, but an exact comparison read
+     the reformat as a revert and reported "entered ... but it did not
+     persist (likely a custom dropdown - select it manually)".
+
+Field names are the randomly generated strings Rippling emits - every
+control on its forms has one, so a generated-looking name signals nothing
+in itself. The ids are the real ones, kept because label resolution hangs
+off field-35-label.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Rippling - a prefilled, unlabelled, required country code</title>
+  </head>
+  <body>
+    <form>
+      <div data-testid="field">
+        <span id="field-12-label">First name</span>
+        <input id="field-12" aria-labelledby="field-12-label" aria-required="true" name="uVWxFEB4Ym" />
+      </div>
+
+      <!--
+        The country-code half of the phone widget, nested exactly as
+        captured. The depth matters: the label cascade's last resort walks
+        up to 8 levels looking for a preceding sibling with text, and this
+        widget buries its input under seven levels of textless wrappers
+        preceded by an empty field div - which is why the walk comes back
+        empty-handed on the real form, and why a flatter reproduction would
+        wrongly borrow "First name" from the field above and test nothing.
+      -->
+      <div data-testid="field"></div>
+      <div data-testid="phone_number-code">
+        <div>
+          <div data-testid="select-controller">
+            <div>
+              <div>
+                <div data-testid="select-search-input">
+                <input
+                  data-input="select-search-input"
+                  data-testid="input-select-search-input"
+                  id="field-38"
+                  aria-required="true"
+                  autocomplete="auto-complete-off"
+                  placeholder="Search"
+                  aria-label="Search"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                  value="+1 US"
+                  name="2VLpZ9Pi3ed"
+                />
+                </div>
+              </div>
+            </div>
+            <div><span data-icon="CARET_DOWN" aria-hidden="true"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- The number half, which reformats on input. -->
+      <div data-testid="phone_number">
+        <span aria-describedby="field-tip-36" id="field-35-label">Phone number</span>
+        <input
+          data-input="phone_number"
+          data-testid="input-phone_number"
+          id="field-35"
+          aria-required="true"
+          autocomplete="off"
+          inputmode="tel"
+          placeholder="Phone number"
+          aria-labelledby="field-35-label"
+          value=""
+          name="-ZzCWIPrO9N"
+        />
+      </div>
+
+      <script>
+        // The live widget reformats a US number to NNN-NNN-NNNN on input.
+        // Reproduced so the comparison after filling meets the same value
+        // the real form produces.
+        var phone = document.getElementById("field-35");
+        phone.addEventListener("input", function () {
+          var digits = phone.value.replace(/[^0-9]/g, "").slice(0, 10);
+          if (digits.length === 10) {
+            phone.value = digits.slice(0, 3) + "-" + digits.slice(3, 6) + "-" + digits.slice(6);
+          }
+        });
+      </script>
+    </form>
+  </body>
+</html>
