@@ -14,6 +14,7 @@ import fs from "node:fs";
 const SOURCES = {
   apply: "src/apply.ts",
   scrape: "src/scrape.ts",
+  resumeGenerator: "src/resumeGenerator.ts",
   searchIndex: "src/searchIndex.ts",
 };
 const ORIGINAL = Object.fromEntries(Object.entries(SOURCES).map(([k, p]) => [k, fs.readFileSync(p, "utf-8")]));
@@ -25,6 +26,7 @@ const SPECS = {
   labels: "test/labels.spec.mts",
   searchindex: "test/searchindex.spec.mts",
   combobox: "test/combobox.spec.mts",
+  resumepath: "test/resumepath.spec.mts",
 };
 
 const MUTATIONS = [
@@ -662,6 +664,16 @@ const MUTATIONS = [
     to: "const isFileChrome = false;",
   },
 
+  {
+    // Tailoring then "fails" with a COM error and the run carries on with
+    // the untailored resume, so an application goes out generic.
+    bug: "hand Word the path unchanged, so forward slashes and relative paths break conversion",
+    source: "resumeGenerator",
+    spec: "resumepath",
+    fixture: "",
+    from: '  return path.resolve(p).replace(/\\//g, "\\\\");',
+    to: "  return p;",
+  },
   {
     // The cascade: one unanswerable question took out the three below it,
     // because the listbox it left open covered them.

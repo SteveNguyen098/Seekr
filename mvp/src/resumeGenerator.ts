@@ -484,11 +484,38 @@ async function writeDocxWithXml(zip: JSZip, xml: string, outPath: string): Promi
  * and line spacing all affect actual page breaks, so this is the only way
  * to know the true page count.
  */
+/**
+ * A path Word will actually open, via COM: absolute, with the separator
+ * Windows expects.
+ *
+ * THE FAILURE this prevents degrades quietly. Tailoring "fails" with a COM
+ * error, the run carries on with the UNTAILORED resume, and only a warning
+ * line says so - so an application goes out with a generic document.
+ * Measured with the same file three ways:
+ *
+ *   ../Seekr Resume Template.docx  -> C:\Windows\Seekr Resume Template.docx
+ *   C:/Users/.../Seekr Resume...   -> C:\//Users/stron/OneDrive/...
+ *   C:\Users\...\Seekr Resume...   -> converted, a 157KB PDF
+ *
+ * A relative path resolves against Word's own working directory rather
+ * than ours, and an absolute one written with forward slashes gets
+ * mangled. Both are fixed here. The Electron shell always passes an
+ * absolute backslash path from a file dialog, which is why this only ever
+ * showed up from the CLI.
+ */
+export function pathForWord(p: string): string {
+  return path.resolve(p).replace(/\//g, "\\");
+}
+
 async function docxToPdf(docxPath: string, pdfPath: string): Promise<void> {
   const scriptPath = path.join(import.meta.dirname, "..", "scripts", "docx-to-pdf.ps1");
-  await execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-DocxPath", docxPath, "-PdfPath", pdfPath], {
-    timeout: 60000,
-  });
+  // Both paths go through pathForWord: Word resolves them itself, through
+  // COM, and accepts neither a relative path nor forward slashes.
+  await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-DocxPath", pathForWord(docxPath), "-PdfPath", pathForWord(pdfPath)],
+    { timeout: 60000 }
+  );
 }
 
 async function getPdfPageCount(pdfPath: string): Promise<number> {
