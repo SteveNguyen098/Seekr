@@ -24,6 +24,7 @@ const SPECS = {
   classify: "test/classify.spec.mts",
   labels: "test/labels.spec.mts",
   searchindex: "test/searchindex.spec.mts",
+  combobox: "test/combobox.spec.mts",
 };
 
 const MUTATIONS = [
@@ -661,6 +662,28 @@ const MUTATIONS = [
     to: "const isFileChrome = false;",
   },
 
+  {
+    // The cascade: one unanswerable question took out the three below it,
+    // because the listbox it left open covered them.
+    bug: "close a dropdown with Escape on the trigger, which the widget ignores",
+    spec: "combobox",
+    fixture: "",
+    from: "  await ctx.press(selector, \"Escape\", { timeout: 2000 }).catch(() => {});\n  await delay(150);\n  if ((await openOptions()) === 0) return;",
+    to: '  await ctx.press(selector, "Escape", { timeout: 2000 }).catch(() => {});\n  return;',
+  },
+  {
+    bug: "stop offering a yes/no answer to a 'do you have a degree?' dropdown",
+    spec: "combobox",
+    fixture: "",
+    from: "  return [degree, ...genericDegreeOptions(label, degree), /^\\s*yes\\b/i];",
+    to: "  return [degree, ...genericDegreeOptions(label, degree)];",
+  },
+  // NOT MUTATED HERE, deliberately: reporting a blocked field with the
+  // form's own required flag happens inside the fill loop, which cannot be
+  // reached without an API key, and every spec in this harness runs
+  // without one. Adding a mutation for it would have reported MISSED - an
+  // honest answer, but a standing one. It was verified by running the real
+  // fill pipeline against a fixture instead; see the commit.
   {
     // Both halves of the Rippling phone widget produced a false "needs
     // you" on every application in a ten-job batch.

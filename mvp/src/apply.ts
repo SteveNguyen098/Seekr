@@ -1719,6 +1719,33 @@ const DEGREE_LEVELS: { level: RegExp; generic: RegExp[] }[] = [
   },
 ];
 
+/**
+ * Everything worth trying in a degree dropdown, most specific first.
+ *
+ * One ordered list rather than two sequential attempts, so the widget is
+ * opened ONCE: every open is a chance to leave a listbox covering the
+ * fields below it (see closeOpenDropdown).
+ *
+ * The yes/no candidate at the end is the fix for a measured failure.
+ * "Do you have a 4 year degree?" is a question about a degree, so it
+ * routes to the degree branch - but its options were exactly
+ * ["Yes", "No"], so no degree name could ever match and the field came
+ * back as "could not find a matching option for 'Bachelor of Business
+ * Administration'". Answering "Yes" is sound precisely because the caller
+ * only consults this list when the profile STATES a degree; with none on
+ * file the branch never runs and the model answers from the resume.
+ *
+ * Last, not first, so a real list of degrees is always answered with the
+ * real degree - such a list holds no "Yes" to match, which is why
+ * appending it costs nothing.
+ *
+ * Exported so the test exercises this order rather than restating it:
+ * a copy in the test would keep passing while the real list changed.
+ */
+export function degreeCandidates(label: string, degree: string): (string | RegExp)[] {
+  return [degree, ...genericDegreeOptions(label, degree), /^\s*yes\b/i];
+}
+
 export function genericDegreeOptions(label: string, value: string): RegExp[] {
   // Scoped to education fields by LABEL, not by the answer's wording: a
   // free-text question that merely mentions a degree must not have its
@@ -2068,6 +2095,68 @@ async function selectFabricMenuOption(
 }
 
 /**
+ * Shuts an open dropdown, and VERIFIES it shut.
+ *
+ * THE BUG, measured end to end on a live Rippling form: an open listbox
+ * covers the fields below it, so every one of them fails the fill-time
+ * hit-test and is reported "not reachable by a real click (hidden or
+ * covered) - left empty". One question that could not be answered silently
+ * took out the next three, which could. In the report that prompted this,
+ * four required questions came back blank and only the first had anything
+ * wrong with it.
+ *
+ * The previous close was `press(selector, "Escape")` on the trigger, and
+ * its docstring claimed it worked. Measured against the real widget, it
+ * does not - nor does Escape on the keyboard, nor clicking the trigger a
+ * second time to toggle it:
+ *
+ *   press(selector, Escape)     open=2 -> 2  still open
+ *   keyboard.press(Escape)      open=2 -> 2  still open
+ *   click the trigger again     open=2 -> 2  still open
+ *   click elsewhere on the page open=2 -> 0  CLOSED
+ *
+ * Only an outside click closes it. Clicking at a blind coordinate would
+ * close it too, but a stray real click can land on a link, a banner, or
+ * another control, so the fallback DISPATCHES the outside-pointer sequence
+ * on <body> instead: the widget's own document-level listener sees a
+ * pointerdown whose target is outside itself and closes, while no real
+ * element is ever clicked. Verified to restore reachability on all three
+ * fields the open listbox had been covering.
+ *
+ * Escape is still tried first, because it is the gentlest thing that works
+ * on the platforms that do honour it, and the check after it costs one
+ * evaluate.
+ */
+async function closeOpenDropdown(ctx: FormContext, selector: string): Promise<void> {
+  // Any rendered option anywhere is the signal: these widgets portal their
+  // listbox out of the field's own subtree, so it cannot be looked for
+  // under the trigger.
+  const openOptions = () =>
+    ctx
+      .evaluate(`document.querySelectorAll('[role="option"]').length`)
+      .then((n) => Number(n) || 0)
+      .catch(() => 0);
+
+  if ((await openOptions()) === 0) return;
+
+  await ctx.press(selector, "Escape", { timeout: 2000 }).catch(() => {});
+  await delay(150);
+  if ((await openOptions()) === 0) return;
+
+  await ctx
+    .evaluate(
+      `(() => {
+        const body = document.body;
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+          body.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+      })()`
+    )
+    .catch(() => {});
+  await delay(200);
+}
+
+/**
  * Opens a custom combobox/react-select-style widget and clicks whichever
  * rendered option matches one of the given candidates (checked in order).
  * Typing a plain .fill() value into these gets silently discarded (see
@@ -2114,7 +2203,7 @@ export async function selectComboboxOption(
     if (result) return result;
   }
 
-  await ctx.press(selector, "Escape").catch(() => {});
+  await closeOpenDropdown(ctx, selector);
   return null;
 }
 
@@ -2155,7 +2244,7 @@ async function selectMultipleComboboxOptions(
     }
   }
 
-  await ctx.press(selector, "Escape").catch(() => {});
+  await closeOpenDropdown(ctx, selector);
   return selected;
 }
 
@@ -2205,7 +2294,7 @@ async function harvestComboboxOptions(
     : false;
   const optionHandles = await getListboxOptions(ctx, selector);
   const texts = await Promise.all(optionHandles.map((h) => h.textContent().then((t) => t?.trim() ?? "").catch(() => "")));
-  await ctx.press(selector, "Escape").catch(() => {});
+  await closeOpenDropdown(ctx, selector);
   return { options: texts.filter(Boolean), multiSelect };
 }
 
@@ -2910,7 +2999,15 @@ export async function fillCurrentPage(
         skipped.push({
           label: field.label || field.selector,
           reason: "not reachable by a real click (hidden or covered) - left empty",
-          required: false,
+          // Reported with the form's OWN required flag, rather than
+          // hardcoded false as it was. Three genuinely required, visible,
+          // answerable questions were blocked by a dropdown this run had
+          // left open, and because they were filed as optional they never
+          // reached the "needs you" banner - the user found them blank by
+          // hand. That is exactly the "real fields silently vanishing from
+          // the fill, which is invisible in a report" failure the
+          // reachability check says it exists to avoid.
+          required: field.required,
         });
         continue;
       }
@@ -3364,15 +3461,19 @@ export async function fillCurrentPage(
     // which never matches a different specific degree.
     if (isDegreeLabel(labelLower) && profile.degree) {
       if (field.isCombobox) {
-        let picked = await selectComboboxOption(formCtx, field.selector, [profile.degree]);
-        if (!picked) {
-          const generic = genericDegreeOptions(field.label, profile.degree);
-          if (generic.length) picked = await selectComboboxOption(formCtx, field.selector, generic);
-          if (picked) {
-            notes.push(
-              `"${field.label.slice(0, 40)}": the list had no option for "${profile.degree}", so the generic "${picked}" was chosen instead - vaguer than your profile, but not wrong.`
-            );
-          }
+        const picked = await selectComboboxOption(
+          formCtx,
+          field.selector,
+          degreeCandidates(field.label, profile.degree)
+        );
+        if (picked && /^\s*yes\b/i.test(picked)) {
+          notes.push(
+            `"${field.label.slice(0, 40)}": this was a yes/no question rather than a list of degrees, answered "${picked}" because your profile states ${profile.degree}.`
+          );
+        } else if (picked && picked !== profile.degree) {
+          notes.push(
+            `"${field.label.slice(0, 40)}": the list had no option for "${profile.degree}", so the generic "${picked}" was chosen instead - vaguer than your profile, but not wrong.`
+          );
         }
         if (picked) filled.push({ label: field.label, value: picked });
         else skipped.push({ label: field.label, reason: `could not find a matching option for "${profile.degree}" in this dropdown`, required: field.required });

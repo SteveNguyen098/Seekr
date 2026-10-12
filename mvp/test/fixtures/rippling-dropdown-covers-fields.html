@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+BUG: one question that could not be answered silently took out the next
+three, which could.
+
+Measured end to end on a live Rippling form (O3 Solutions, Business
+Analyst). Four required questions came back blank and only the FIRST had
+anything wrong with it:
+
+  "Do you have a 4 year degree?"            could not find a matching
+                                            option for "Bachelor of
+                                            Business Administration"
+  "Are you willing to use AI coding tools?" not reachable by a real click
+  "What are your salary expectations?"      not reachable by a real click
+  "Are you authorized to work in the US?"   not reachable by a real click
+
+Two separate faults, reproduced here together because that is how they
+compound:
+
+  1. The degree question's options were exactly ["Yes", "No"] - it is a
+     yes/no question about a degree, not a list of degrees - so no degree
+     name could ever match it.
+
+  2. On that failure the listbox was LEFT OPEN, and an open listbox covers
+     whatever is beneath it, so the following fields failed the fill-time
+     hit-test. The close was `press(selector, "Escape")` on the trigger,
+     which measurably does nothing to this widget. Measured on the live
+     form, option count before -> after:
+
+       press(selector, Escape)     2 -> 2  still open
+       keyboard.press(Escape)      2 -> 2  still open
+       click the trigger again     2 -> 2  still open
+       click elsewhere on the page 2 -> 0  CLOSED
+
+This fixture reproduces the mechanism, not the styling: a bare
+<div role="combobox"> trigger, a listbox portaled to <body> and positioned
+over the fields below, and a close handler that fires only on a pointerdown
+whose target lies outside the widget - ignoring Escape entirely, exactly as
+measured.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rippling - an open dropdown covers the fields below it</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; }
+      .q { margin: 18px 0; max-width: 520px; }
+      .qtext { margin-bottom: 4px; }
+      [role="combobox"] { display: flex; width: 486px; height: 24px; border: 1px solid #999; }
+      /* Portaled, absolutely positioned, and tall enough to sit over the
+         questions that follow - which is the whole point. */
+      #listbox {
+        position: absolute;
+        z-index: 99;
+        background: #fff;
+        border: 1px solid #333;
+        width: 486px;
+        height: 240px;
+      }
+      [role="option"] { padding: 6px; }
+    </style>
+  </head>
+  <body>
+    <form>
+      <div class="q">
+        <div class="qtext">Do you have a 4 year degree?*</div>
+        <div id="degree" role="combobox" aria-required="true" aria-expanded="false"></div>
+      </div>
+
+      <div class="q">
+        <div class="qtext">Are you willing to use AI coding tools as part of your daily workflow?*</div>
+        <div id="aitools" role="combobox" aria-required="true" aria-expanded="false"></div>
+      </div>
+
+      <div class="q">
+        <div class="qtext">Are you authorized to work in the United States without sponsorship?*</div>
+        <div id="authorized" role="combobox" aria-required="true" aria-expanded="false"></div>
+      </div>
+    </form>
+
+    <script>
+      var listbox = null;
+
+      function closeListbox() {
+        if (!listbox) return;
+        listbox.remove();
+        listbox = null;
+        var open = document.querySelector('[aria-expanded="true"]');
+        if (open) open.setAttribute("aria-expanded", "false");
+      }
+
+      function openListbox(trigger) {
+        closeListbox();
+        listbox = document.createElement("div");
+        listbox.id = "listbox";
+        listbox.setAttribute("role", "listbox");
+        var box = trigger.getBoundingClientRect();
+        listbox.style.left = box.left + window.scrollX + "px";
+        listbox.style.top = box.bottom + window.scrollY + "px";
+        ["Yes", "No"].forEach(function (text) {
+          var option = document.createElement("div");
+          option.setAttribute("role", "option");
+          option.textContent = text;
+          option.addEventListener("click", function () {
+            trigger.textContent = text;
+            closeListbox();
+          });
+          listbox.appendChild(option);
+        });
+        document.body.appendChild(listbox);
+        trigger.setAttribute("aria-expanded", "true");
+      }
+
+      Array.prototype.forEach.call(document.querySelectorAll('[role="combobox"]'), function (trigger) {
+        trigger.addEventListener("click", function () {
+          if (listbox && trigger.getAttribute("aria-expanded") === "true") return;
+          openListbox(trigger);
+        });
+      });
+
+      // Closes on an OUTSIDE pointerdown only. Escape is deliberately not
+      // handled, because the real widget does not handle it either - a
+      // fixture that closed on Escape would let the old code pass.
+      document.addEventListener("pointerdown", function (event) {
+        if (!listbox) return;
+        if (listbox.contains(event.target)) return;
+        if (event.target.getAttribute && event.target.getAttribute("role") === "combobox") return;
+        closeListbox();
+      });
+    </script>
+  </body>
+</html>
