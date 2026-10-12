@@ -665,6 +665,17 @@ const MUTATIONS = [
   },
 
   {
+    // The old regex matched exactly two real questions in the corpus and
+    // both were workplace-tooling questions answered "No" - one of them a
+    // required field, and one reported by the candidate as the opposite of
+    // what they wanted.
+    bug: "answer any question mentioning an AI tool with a flat 'No' again",
+    spec: "labels",
+    fixture: "",
+    from: "  if (!/\\bai\\b|\\bllm\\b|chatgpt|copilot|generative/.test(labelLower)) return false;",
+    to: "  if (/\\bai\\b.*(policy|tool|assist|usage|disclos)/.test(labelLower)) return true;\n  if (!/\\bai\\b|\\bllm\\b|chatgpt|copilot|generative/.test(labelLower)) return false;",
+  },
+  {
     // Tailoring then "fails" with a COM error and the run carries on with
     // the untailored resume, so an application goes out generic.
     bug: "hand Word the path unchanged, so forward slashes and relative paths break conversion",

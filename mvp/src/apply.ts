@@ -165,7 +165,43 @@ const CONSENT_RE = /consent|gdpr|privacy policy|data protection|terms of service
 const HOW_HEARD_VERB_RE = "(hear|heard|find|found|learn|learned|learnt)";
 const HOW_HEARD_OPPORTUNITY_RE = new RegExp(`(how|where) (did|have) you ${HOW_HEARD_VERB_RE}.*(this )?(opportunity|role|position|job)`, "i");
 const HOW_HEARD_RE = new RegExp(`how (did|have) you ${HOW_HEARD_VERB_RE}|where (did|have) you ${HOW_HEARD_VERB_RE}`, "i");
-const AI_POLICY_RE = /\bAI\b.*(policy|tool|assist|usage|disclos)/i;
+/**
+ * An AI question asking the candidate to DISCLOSE whether AI wrote this
+ * application - as opposed to asking whether they use AI tools at work.
+ * Only the first gets a hardcoded answer.
+ *
+ * THE BUG: this branch used to match /\bAI\b.*(policy|tool|assist|usage|
+ * disclos)/i and answer a flat "No", which swallowed the second shape
+ * entirely. Measured across the snapshot corpus, that regex matched
+ * exactly two real questions and BOTH were workplace-tooling questions
+ * answered wrongly:
+ *
+ *   "Are you willing to use AI coding tools as part of your daily
+ *    workflow?"                                        -> "No"  (O3 Solutions)
+ *   "Do you use AI tools (e.g., Claude, ChatGPT, Copilot) to support
+ *    requirements documentation and analysis?*"        -> "No"  (MSQ DX, REQUIRED)
+ *
+ * The first was reported: the candidate's expected answer was "Yes". Worse
+ * than a blank field, this one was confidently wrong, filed as
+ * "AI-selected", and said the opposite of what the candidate wanted on a
+ * live application.
+ *
+ * So the test is now what the question is ABOUT. A question about this
+ * application, its answers, or an AI policy keeps the deterministic
+ * answer. A question about how the candidate works falls through to the
+ * normal answering path, where their own stated position governs it -
+ * which is where it always belonged, since only they can answer it.
+ */
+export function isAiDisclosureLabel(labelLower: string): boolean {
+  if (!/\bai\b|\bllm\b|chatgpt|copilot|generative/.test(labelLower)) return false;
+  return (
+    // About this submission specifically.
+    /(this|your)\s+(application|submission|response|responses|answers?|essay|form|cover letter)/.test(labelLower) ||
+    /\b(these|the)\s+(answers|responses)\b/.test(labelLower) ||
+    // Or explicitly framed as policy/disclosure.
+    /\bai\b[^?]*\b(polic|disclos)/.test(labelLower)
+  );
+}
 // OFCCP-mandated EEOC self-ID forms use inconsistent phrasing across
 // sites/forms: the standard veteran form says "don't wish to answer" while
 // the standard disability form (CC-305) says "don't want to answer" -
@@ -3363,7 +3399,7 @@ export async function fillCurrentPage(
       await answerDirectly(formCtx, field, HOW_HEARD_CANDIDATES, filled, skipped, "no matching option found for how-did-you-hear source", filledSelectors);
       continue;
     }
-    if (AI_POLICY_RE.test(labelLower)) {
+    if (isAiDisclosureLabel(labelLower)) {
       await answerDirectly(formCtx, field, AI_POLICY_CANDIDATES, filled, skipped, "no matching option found for AI policy question", filledSelectors);
       continue;
     }
@@ -3610,6 +3646,19 @@ export async function fillCurrentPage(
     }
 
     const answers = await answerWithClaude(anthropic, resume, jobDescription, context, toAnswer, false, salaryResearch);
+    // SEEKR_DEBUG_ANSWERS=1 prints what the MODEL actually returned, before
+    // any option matching.
+    //
+    // Kept because its absence cost real time: a field was reported as
+    // "AI-selected: No", and three plausible explanations - the context not
+    // reaching the model, the model answering No, the option matcher picking
+    // the wrong option - are indistinguishable from the report, which only
+    // ever shows the value that ended up in the form. One run with this
+    // flag showed the field was never sent to the model at all, which named
+    // the real cause (a deterministic branch) in one step.
+    if (process.env.SEEKR_DEBUG_ANSWERS) {
+      for (const [sel, answer] of answers) console.log(`[RAW] ${sel} => ${JSON.stringify(answer)}`);
+    }
     const hasAnswer = (f: AnswerableField, a: ClaudeAnswer | undefined) =>
       !!a && (f.multiSelect ? a.values.length > 0 : !!a.value);
 
