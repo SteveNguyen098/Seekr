@@ -13,6 +13,7 @@
  *   npm run test:locations
  */
 import { combineLocations } from "../src/match.js";
+import { matchesAcceptableLocation } from "../src/filter.js";
 
 let pass = 0;
 let fail = 0;
@@ -91,6 +92,53 @@ console.log("combineLocations");
     got.everywhere
   );
 }
+
+// A two-letter state code in acceptableLocations is the whole reason this
+// has to match words rather than substrings.
+console.log("\nmatchesAcceptableLocation");
+const ACCEPTED = ["Atlanta", "Alpharetta", "GA", "Remote"];
+const LOCATIONS: { location: string; want: boolean; why: string }[] = [
+  // What adding "GA" is for.
+  { location: "Alpharetta, GA", want: true, why: "the measured multi-site role's Georgia office" },
+  { location: "GA", want: true, why: "the bare state code, as the Rippling index writes it" },
+  { location: "Atlanta, GA", want: true, why: "the home city" },
+  { location: "WI / TX / GA / IL", want: true, why: "a merged multi-location role including Georgia" },
+  { location: "Remote (United States)", want: true, why: "remote still matches on a word" },
+
+  // THE TRAP: a substring test matched 92 of 355 postings on one board,
+  // every one of them through the "ga" inside another word.
+  { location: "Bangalore, India", want: false, why: "THE TRAP: Ban-GA-lore is not Georgia" },
+  { location: "Singapore, Singapore", want: false, why: "THE TRAP: Sin-GA-pore is not Georgia" },
+  { location: "Galway, Ireland", want: false, why: "a city merely starting with those letters" },
+  { location: "Atlantic City, NJ", want: false, why: "Atlantic is not Atlanta" },
+  { location: "Boca Raton, FL", want: false, why: "a genuinely different state" },
+  { location: "Westbury, NY", want: false, why: "the same" },
+  { location: "Sunnyvale, CA / Saratoga, CA", want: false, why: "a multi-location role entirely out of range" },
+];
+for (const c of LOCATIONS) {
+  const got = matchesAcceptableLocation(c.location, ACCEPTED);
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${String(got).padEnd(5)} ${JSON.stringify(c.location.slice(0, 44))}`);
+  if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
+}
+
+// A needle that does not end in a word character must still match at the
+// end of a string, or a word boundary would be required after the dot.
+check(
+  "a needle ending in punctuation still matches",
+  matchesAcceptableLocation("Washington, D.C.", ["D.C."]),
+  "D.C."
+);
+check(
+  "...and its regex characters are escaped rather than interpreted",
+  // "DXCX" is what an UNescaped "D.C." matches: D, any, C, any. A shorter
+  // string like "DXC" would fail either way and would test nothing.
+  !matchesAcceptableLocation("Office in DXCX", ["D.C."]),
+  "the dot must not act as a wildcard"
+);
+check("an empty needle matches nothing", !matchesAcceptableLocation("Atlanta, GA", [""]));
+check("no needles at all matches nothing", !matchesAcceptableLocation("Atlanta, GA", []));
 
 console.log(`\n${"-".repeat(70)}`);
 console.log(

@@ -31,13 +31,40 @@ export function filterByTitle(jobs: JobPosting[], criteria: Criteria): JobPostin
  * left alone rather than guessed at - the AI ranking step already reasons
  * about location fit from the full job description.
  */
+/**
+ * Whether a posting's location is one the candidate accepts.
+ *
+ * Matched as whole words, not as a raw substring, because a state code is
+ * two letters and two letters turn up inside everything.
+ *
+ * THE TRAP, measured on a live board the moment "GA" was added to
+ * acceptableLocations: a plain substring test matched 92 of 355 postings,
+ * and every single one was wrong - "Ban-GA-lore, India", "Sin-GA-pore".
+ * Not one matched on a real "GA". The off-location flag would have gone
+ * quiet across the whole board, which is worse than not having it: a flag
+ * that never fires reads as "all of these are fine".
+ *
+ * Word boundaries are only applied where the needle actually starts or
+ * ends with a word character, so a needle like "D.C." still matches at the
+ * end of "Washington, D.C." instead of requiring a letter after the dot.
+ */
+export function matchesAcceptableLocation(location: string, acceptable: string[]): boolean {
+  return acceptable.some((needle) => {
+    const term = needle.trim();
+    if (!term) return false;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const left = /^\w/.test(term) ? "\\b" : "";
+    const right = /\w$/.test(term) ? "\\b" : "";
+    return new RegExp(`${left}${escaped}${right}`, "i").test(location);
+  });
+}
+
 export function filterByLocation(jobs: JobPosting[], criteria: Criteria): JobPosting[] {
   if (!criteria.acceptableLocations || criteria.acceptableLocations.length === 0) return jobs;
-  const needles = criteria.acceptableLocations.map((l) => l.toLowerCase());
   return jobs.filter((job) => {
-    const location = job.location.toLowerCase();
+    const location = job.location;
     if (!location.trim()) return true;
-    if (needles.some((n) => location.includes(n))) return true;
+    if (matchesAcceptableLocation(location, criteria.acceptableLocations!)) return true;
     const looksSpecific = location.includes(",");
     return !looksSpecific;
   });

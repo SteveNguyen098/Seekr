@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { loadResume } from "./resume.js";
 import { coverageShortfall, describeScan, listJobs, getJobDescription, classifyUrl } from "./scrape.js";
-import { passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
+import { matchesAcceptableLocation, passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
 import { combineLocations, MAX_SHORTLIST, rankJobs, triageTitles, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
@@ -382,7 +382,7 @@ try {
     // the full description and weighs location itself, and
     // detectLocationPreference below still flags a mismatch out loud.
     const offLocation = criteria.acceptableLocations?.length
-      ? shortlist.filter((s) => s.job.location.trim() && !criteria.acceptableLocations!.some((l) => s.job.location.toLowerCase().includes(l.toLowerCase())))
+      ? shortlist.filter((s) => s.job.location.trim() && !matchesAcceptableLocation(s.job.location, criteria.acceptableLocations!))
       : [];
     if (offLocation.length) {
       console.log(`  note: ${offLocation.length} of these are outside [${criteria.acceptableLocations!.join(", ")}] - shown anyway, flagged per posting`);
@@ -448,7 +448,7 @@ try {
             offLocation:
               !!everywhere.trim() &&
               !!criteria.acceptableLocations?.length &&
-              !criteria.acceptableLocations.some((l) => everywhere.toLowerCase().includes(l.toLowerCase())),
+              !matchesAcceptableLocation(everywhere, criteria.acceptableLocations),
             meetsBar: r.score >= minMatchScore,
           };
         });

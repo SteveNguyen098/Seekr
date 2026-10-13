@@ -18,6 +18,6 @@
   "minSalaryAnnual": 52000,
   "minSalaryHourly": 25,
   "requireFullTimeOrContractToHire": true,
-  "acceptableLocations": ["Atlanta", "Remote"],
+  "acceptableLocations": ["Atlanta", "Alpharetta", "GA", "Remote"],
   "minMatchScore": 45
 }

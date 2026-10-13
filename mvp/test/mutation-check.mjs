@@ -15,6 +15,7 @@ const SOURCES = {
   apply: "src/apply.ts",
   scrape: "src/scrape.ts",
   match: "src/match.ts",
+  filter: "src/filter.ts",
   resumeGenerator: "src/resumeGenerator.ts",
   searchIndex: "src/searchIndex.ts",
 };
@@ -726,6 +727,26 @@ const MUTATIONS = [
     to: '        const prefilled = "";',
   },
 
+  {
+    // Adding "GA" to acceptableLocations made a plain substring test match
+    // 92 of 355 postings on a live board, every one through the "ga"
+    // inside Bangalore or Singapore. A flag that never fires reads as
+    // "all of these are fine".
+    bug: "match an accepted location as a raw substring, so GA matches Bangalore",
+    source: "filter",
+    spec: "locations",
+    fixture: "",
+    from: "    const left = /^\\w/.test(term) ? \"\\\\b\" : \"\";\n    const right = /\\w$/.test(term) ? \"\\\\b\" : \"\";",
+    to: '    const left = "";\n    const right = "";',
+  },
+  {
+    bug: "stop escaping a location needle, letting its punctuation act as a wildcard",
+    source: "filter",
+    spec: "locations",
+    fixture: "",
+    from: "    const escaped = term.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\");",
+    to: "    const escaped = term;",
+  },
   {
     // The regression the first version of this feature shipped with: the
     // board's single location hid the extra sites a multi-site posting
