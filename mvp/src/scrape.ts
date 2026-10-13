@@ -37,6 +37,37 @@ export interface BoardListing {
  * counts something marginally different; a scraper gap of the kind worth
  * reporting is not a rounding error (the real one was 4%).
  */
+/**
+ * What a scan found, said so the numbers reconcile on sight.
+ *
+ * "found 355 postings" against a board whose own page says 614 reads as a
+ * 259-job gap, and it was reported as one. It is not: that board's index
+ * lists a role once per location it is open in, so 614 listings are 355
+ * distinct jobs. Measured on it - 127 urls appear more than once, one of
+ * them 20 times (an Account Executive role open across 20 US states, every
+ * row leading to the same application), and nothing in the index was
+ * missing from the scan.
+ *
+ * So when listings outnumber postings, both numbers are stated together
+ * with the reason. The alternative - reporting the larger number - would be
+ * a lie about how many jobs there are to apply to, and the roles would
+ * still collapse to 355 on the way to the shortlist.
+ *
+ * The explanation is only offered when it is actually true: a board with
+ * more listings than postings but no multi-location roles gets the counts
+ * without a reason invented for them.
+ */
+export function describeScan(jobs: JobPosting[], rows: number): string {
+  const postings = jobs.length;
+  if (rows <= postings) return `found ${postings} postings`;
+
+  const multiLocation = jobs.filter((job) => job.location.split(" / ").length > 1).length;
+  if (multiLocation === 0) return `found ${postings} postings (${rows} listings)`;
+
+  const roles = multiLocation === 1 ? "1 role is" : `${multiLocation} roles are`;
+  return `found ${postings} postings (${rows} listings - ${roles} open in several locations)`;
+}
+
 export function coverageShortfall(rows: number, statedTotal: number | null): string | null {
   if (statedTotal === null || rows >= statedTotal * 0.9) return null;
   return (

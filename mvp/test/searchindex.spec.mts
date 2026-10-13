@@ -17,7 +17,7 @@ import {
   postingFromHit,
   queryBodyFor,
 } from "../src/searchIndex.js";
-import { coverageShortfall } from "../src/scrape.js";
+import { coverageShortfall, describeScan } from "../src/scrape.js";
 
 let passed = 0;
 let failed = 0;
@@ -216,6 +216,42 @@ console.log("\nmergeLocationVariants");
     { title: "A", url: "https://x/jobs/1", location: "GA" },
     { title: "A", url: "https://x/jobs/1", location: "GA" },
   ])[0].location === "GA");
+}
+
+console.log("\ndescribeScan");
+{
+  const posting = (url: string, location: string) => ({ title: "A role", url, location });
+  // The measured board: 614 listings, 355 distinct postings, 127 of them
+  // open in several locations. "found 355 postings" alone read as a
+  // 259-job gap and was reported as one.
+  const many = [
+    ...Array.from({ length: 127 }, (_, i) => posting(`https://x/jobs/multi-${i}`, "GA / TX / Remote (United States)")),
+    ...Array.from({ length: 228 }, (_, i) => posting(`https://x/jobs/single-${i}`, "Boca Raton, FL")),
+  ];
+  const line = describeScan(many, 614);
+  check("THE BUG: both numbers are stated, so they reconcile on sight", line.includes("355") && line.includes("614"), line);
+  check("and the reason is given", /open in several locations/.test(line), line);
+  check("the multi-location count is the real one", line.includes("127 roles are"), line);
+
+  // A board with no duplication says nothing extra.
+  const plain = Array.from({ length: 206 }, (_, i) => posting(`https://x/jobs/p-${i}`, "Singapore"));
+  check("a board whose counts agree stays terse", describeScan(plain, 206) === "found 206 postings", describeScan(plain, 206));
+  check(
+    "...and so does a DOM-walked board, where rows equal postings",
+    describeScan(plain, 206).includes("listings") === false,
+    describeScan(plain, 206)
+  );
+
+  // Honest when the counts differ for a reason we cannot name.
+  const noMulti = Array.from({ length: 10 }, (_, i) => posting(`https://x/jobs/q-${i}`, "Austin, TX"));
+  check(
+    "THE TRAP: no explanation is invented when nothing is multi-location",
+    describeScan(noMulti, 25) === "found 10 postings (25 listings)",
+    describeScan(noMulti, 25)
+  );
+
+  const one = [posting("https://x/jobs/solo", "GA / TX")];
+  check("one such role reads as singular", describeScan(one, 2).includes("1 role is"), describeScan(one, 2));
 }
 
 console.log("\ncoverageShortfall");

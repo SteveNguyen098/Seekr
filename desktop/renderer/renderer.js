@@ -72,6 +72,21 @@ addLinkRow();
 $("addLink").addEventListener("click", () => addLinkRow()?.focus());
 
 // ---- board scan -> suggestions -----------------------------------------
+// "355 scanned" against a board whose own page says 614 reads as a gap.
+// It is not one: such a board lists a role once per location it is open
+// in, so the two numbers are stated together with the reason. Mirrors
+// describeScan() in the CLI, so both surfaces say the same thing.
+function scannedLabel(r) {
+  const scanned = r.scanned;
+  const listings = r.listings;
+  if (!listings || listings <= scanned) return `${scanned} scanned`;
+  const multi = r.multiLocation;
+  if (!multi) return `${scanned} scanned of ${listings} listings`;
+  const roles = multi === 1 ? "1 role is" : `${multi} roles are`;
+  return `${scanned} scanned · ${listings} listings, ${roles} open in several locations`;
+}
+
+
 
 // Puts a suggested posting into the queue rather than filling it straight
 // away. Picking three jobs off a board and running them together is the
@@ -147,7 +162,7 @@ function renderSuggestions(payload) {
   const s = payload.suggestions;
   const overBar = s.filter((x) => x.meetsBar).length;
   $("suggestMeta").textContent =
-    `${payload.scanned} scanned · ${payload.opened} read in full` +
+    `${scannedLabel(payload)} · ${payload.opened} read in full` +
     (payload.coverageShortfall ? ` · of ${payload.statedTotal} on the board` : "");
   $("suggestNote").textContent =
     (payload.coverageShortfall ? `Partial board: ${payload.coverageShortfall} ` : "") +
@@ -424,7 +439,7 @@ function renderReport(r, { index, status, url }) {
       `<div class="title"><span class="pill">${index + 1} of ${queueTotal}</span> ` +
       `Job board<span class="tag ai">${r.suggestions.length} suggestion${r.suggestions.length === 1 ? "" : "s"}</span></div>` +
       `<div class="meta">${esc(url)}</div>` +
-      `<div class="meta">${r.scanned} postings scanned · ${r.opened} read in full. Nothing was filled in — pick the ones worth applying to.</div>` +
+      `<div class="meta">${esc(scannedLabel(r))} · ${r.opened} read in full. Nothing was filled in — pick the ones worth applying to.</div>` +
       (r.coverageShortfall ? `<div class="meta warn">Partial board: ${esc(r.coverageShortfall)}</div>` : "");
     card.appendChild(head);
     card.appendChild(suggestionList(r.suggestions));

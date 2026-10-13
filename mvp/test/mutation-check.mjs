@@ -860,6 +860,24 @@ const MUTATIONS = [
     to: ".filter(() => false);",
   },
   {
+    // "found 355 postings" against a board whose page says 614 was read as
+    // a 259-job gap and reported as one.
+    bug: "report only the posting count, so it looks like a gap against the board's own total",
+    source: "scrape",
+    spec: "searchindex",
+    fixture: "",
+    from: "  if (rows <= postings) return `found ${postings} postings`;",
+    to: "  return `found ${postings} postings`;",
+  },
+  {
+    bug: "claim multi-location roles explain the gap even when there are none",
+    source: "scrape",
+    spec: "searchindex",
+    fixture: "",
+    from: "  if (multiLocation === 0) return `found ${postings} postings (${rows} listings)`;",
+    to: "  if (false) return `found ${postings} postings (${rows} listings)`;",
+  },
+  {
     bug: "never report a shortfall, so 26 of 625 passes silently",
     source: "scrape",
     spec: "searchindex",
