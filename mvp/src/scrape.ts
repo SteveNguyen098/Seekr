@@ -317,16 +317,61 @@ async function listJobsOnePage(
           // Channel (Arkansas) Sales - AR" and got triaged in that state.
           // innerText honours the hiding, so only the rendered variant is
           // read, and its line breaks separate the card's own fields.
-          const lines = ((el as HTMLElement).innerText || el.textContent || "")
+          const href = (el as HTMLAnchorElement).href;
+          // Line-splitting is written out at both sites rather than factored
+          // into a helper: a named const arrow inside this evaluate callback
+          // gets an esbuild __name() wrapper that does not exist once the
+          // function is serialized into the page, and the call fails with
+          // "__name is not defined". Measured here, not theorised - the same
+          // trap is documented in apply.ts's proximity walk.
+          let lines = ((el as HTMLElement).innerText || el.textContent || "")
             .split("\n")
             .map((line) => line.replace(/\s+/g, " ").trim())
             .filter(Boolean);
+          const title = lines[0] ?? "";
+
+          // The anchor held nothing but its title, so the location lives
+          // OUTSIDE it, in the card around it.
+          //
+          // THE GAP: measured on a Rippling ATS board, every posting is two
+          // separate anchors - the title and a "View job" button - with the
+          // department and location as plain text between them. So the
+          // anchor's own innerText is one line, and all 58 postings came
+          // back with no location at all. That is not only a blank column:
+          // triage weighs location, and it was weighing nothing.
+          //
+          // Climbs only while EVERY link inside the ancestor still points at
+          // this same posting. That is what keeps it from swallowing a
+          // neighbour: one step further up on that board the ancestor holds
+          // six anchors across several postings, and its text would have
+          // handed this posting the next one's location.
+          if (lines.length < 2) {
+            let node: Element | null = el.parentElement;
+            for (let hops = 0; hops < 4 && node; hops++) {
+              const links = Array.from(node.querySelectorAll("a[href]")) as HTMLAnchorElement[];
+              if (!links.every((a) => a.href === href)) break;
+              const fromCard = ((node as HTMLElement).innerText || node.textContent || "")
+                .split("\n")
+                .map((line) => line.replace(/\s+/g, " ").trim())
+                .filter(Boolean);
+              if (fromCard.length > 1) lines = fromCard;
+              node = node.parentElement;
+            }
+          }
+
+          // A card's own call-to-action is not a location. Measured as the
+          // last line on every posting of that board, so taking the last
+          // line blindly would have made every location "View job".
+          const fields = lines
+            .slice(1)
+            .filter((line) => !/^(view|view job|apply|apply now|view role|details|learn more|see more|read more)$/i.test(line));
+
           return {
-            title: lines[0] ?? "",
-            href: (el as HTMLAnchorElement).href,
-            // The card's last line is its location when it has one; a plain
-            // title-only link yields no second line and so no location.
-            location: lines.length > 1 ? lines[lines.length - 1] : "",
+            title,
+            href,
+            // The last remaining field is the location when there is one; a
+            // plain title-only link still yields none.
+            location: fields.length ? fields[fields.length - 1] : "",
           };
         })
         .filter((j) => /\/(job|jobs|position|positions|opening|openings|careers)\/[\w-]+/i.test(j.href))

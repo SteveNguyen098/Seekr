@@ -175,7 +175,16 @@ function suggestionList(jobs) {
       (job.offLocation ? '<span class="tag low">off-location</span>' : "");
     body.innerHTML =
       `<div class="suggestTitle">${esc(job.title)}${flags}</div>` +
-      `<div class="meta">${esc(job.location || "location not stated")}</div>` +
+      // Three states, kept distinct: stated by the board, read out of
+      // the posting (worth a glance), or in neither - still shown and
+      // flagged rather than left as a blank to be inferred.
+      `<div class="meta${job.location ? (job.locationUnconfirmed ? " warn" : "") : " warn"}">` +
+      (job.location
+        ? esc(job.location) +
+          (job.alsoInPosting ? "; the posting also names " + esc(job.alsoInPosting) : "") +
+          (job.locationUnconfirmed ? " — from the posting, worth confirming" : "")
+        : "location not stated on the board or in the posting — check it yourself") +
+      `</div>` +
       `<div class="suggestWhy">${esc(job.reasoning)}</div>`;
 
     const act = document.createElement("div");

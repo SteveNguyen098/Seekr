@@ -1,0 +1,78 @@
+<!doctype html>
+<!--
+BUG: all 58 postings on a board came back with no location at all, so the
+shortlist read "location not stated" for a role plainly based in
+Alpharetta, GA - and triage, which weighs location, was weighing nothing.
+
+Measured on a Rippling ATS board (RAS Legal Group). Every posting is TWO
+separate anchors - the title and a "View job" button, both pointing at the
+same posting - with the department and location as plain text between them.
+So the title anchor's own innerText is a single line, and the location is
+nowhere inside the link the scraper reads.
+
+The nesting is reproduced from the live card, because the depths are what
+the fix keys on:
+
+  level  contents                                        links
+  ----------------------------------------------------------------
+    +1   title                                           1  (same posting)
+    +2   title | Accounting | Boca Raton, FL             1  (same posting)
+    +3   title | Accounting | Boca Raton, FL | View job  2  (same posting)
+    +4   ... plus the NEXT posting's whole card          6  (several)
+
+So the climb has to continue while every link inside still points at THIS
+posting, and stop at +4 - one step further and this posting would be handed
+its neighbour's location.
+
+"View job" also has to be dropped: it is the last line of the card, so
+taking the last line blindly made every location "View job".
+
+The third posting below pins the opposite direction: a card that states its
+location inside the anchor must keep working unchanged, without the climb.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Open roles</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 24px; }
+      .card { display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid #ddd; padding: 10px 0; }
+      .row { display: flex; flex-direction: column; gap: 4px; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <p>3 jobs</p>
+    <main>
+      <!-- Location outside the anchor, as measured. -->
+      <div class="group">
+        <div class="card">
+          <div class="row">
+            <div><a href="../jobs/accounts-payable-coordinator">Accounts Payable Coordinator</a></div>
+            <div>Accounting</div>
+            <div>Boca Raton, FL</div>
+          </div>
+          <div><a href="../jobs/accounts-payable-coordinator">View job</a></div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div><a href="../jobs/junior-business-analyst">Junior Business Analyst (Legal Operations)</a></div>
+            <div>Legal Operations</div>
+            <div>Alpharetta, GA</div>
+          </div>
+          <div><a href="../jobs/junior-business-analyst">View job</a></div>
+        </div>
+      </div>
+
+      <!-- The shape that already worked: everything inside the anchor. -->
+      <div class="card">
+        <a class="row" href="../jobs/compliance-analyst">
+          <div>Compliance Analyst - Entry Level</div>
+          <div>Compliance</div>
+          <div>Remote (United States)</div>
+        </a>
+      </div>
+    </main>
+  </body>
+</html>

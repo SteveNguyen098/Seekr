@@ -14,6 +14,7 @@ import fs from "node:fs";
 const SOURCES = {
   apply: "src/apply.ts",
   scrape: "src/scrape.ts",
+  match: "src/match.ts",
   resumeGenerator: "src/resumeGenerator.ts",
   searchIndex: "src/searchIndex.ts",
 };
@@ -27,6 +28,7 @@ const SPECS = {
   searchindex: "test/searchindex.spec.mts",
   combobox: "test/combobox.spec.mts",
   pagination: "test/pagination.spec.mts",
+  locations: "test/locations.spec.mts",
   resumepath: "test/resumepath.spec.mts",
 };
 
@@ -725,6 +727,59 @@ const MUTATIONS = [
   },
 
   {
+    // The regression the first version of this feature shipped with: the
+    // board's single location hid the extra sites a multi-site posting
+    // names, including the only one the candidate could reach.
+    bug: "keep only the board's location, dropping the sites only the posting names",
+    source: "match",
+    spec: "locations",
+    fixture: "",
+    from: "    alsoInPosting: board ? alsoInPosting : \"\",",
+    to: '    alsoInPosting: "",',
+  },
+  {
+    bug: "let an off-location decision see only the first site of a multi-site role",
+    source: "match",
+    spec: "locations",
+    fixture: "",
+    from: "    everywhere: [location, board ? alsoInPosting : \"\"].filter(Boolean).join(\" / \"),",
+    to: "    everywhere: location,",
+  },
+  {
+    bug: "repeat the board's own city back as an extra site",
+    source: "match",
+    spec: "locations",
+    fixture: "",
+    from: "    .filter((part) => part && !board.toLowerCase().includes(part.toLowerCase()))",
+    to: "    .filter((part) => !!part)",
+  },
+  {
+    // All 58 postings on a Rippling ATS board came back with no location,
+    // because every location sits outside the title anchor.
+    bug: "read only the anchor, so a location stated beside it is lost",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "          if (lines.length < 2) {\n            let node: Element | null = el.parentElement;",
+    to: "          if (false) {\n            let node: Element | null = el.parentElement;",
+  },
+  {
+    bug: "climb past the posting's own card, borrowing a neighbour's location",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "              if (!links.every((a) => a.href === href)) break;",
+    to: "              if (false) break;",
+  },
+  {
+    bug: "take the card's last line blindly, making every location 'View job'",
+    source: "scrape",
+    spec: "classify",
+    fixture: "",
+    from: "            .filter((line) => !/^(view|view job|apply|apply now|view role|details|learn more|see more|read more)$/i.test(line));",
+    to: "            .filter(() => true);",
+  },
+  {
     // The reported symptom: "job board not being scanned properly due to
     // it having multiple pages". The walk was Greenhouse-only, so a
     // 4-page Rippling ATS board was scanned 17 of 58 deep.
@@ -766,8 +821,8 @@ const MUTATIONS = [
     source: "scrape",
     spec: "classify",
     fixture: "",
-    from: 'const lines = ((el as HTMLElement).innerText || el.textContent || "")',
-    to: 'const lines = (el.textContent || "")',
+    from: 'let lines = ((el as HTMLElement).innerText || el.textContent || "")',
+    to: 'let lines = (el.textContent || "")',
   },
   {
     bug: "stop excluding links into the current page, so the skip-link is a posting",
@@ -793,7 +848,7 @@ const MUTATIONS = [
     source: "scrape",
     spec: "classify",
     fixture: "",
-    from: "location: lines.length > 1 ? lines[lines.length - 1] : \"\",",
+    from: "location: fields.length ? fields[fields.length - 1] : \"\",",
     to: 'location: "",',
   },
   {

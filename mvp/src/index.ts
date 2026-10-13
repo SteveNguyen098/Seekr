@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { loadResume } from "./resume.js";
 import { coverageShortfall, listJobs, getJobDescription, classifyUrl } from "./scrape.js";
 import { passesHardRequirements, detectLocationPreference, type Criteria } from "./filter.js";
-import { MAX_SHORTLIST, rankJobs, triageTitles, type CandidateJob } from "./match.js";
+import { combineLocations, MAX_SHORTLIST, rankJobs, triageTitles, type CandidateJob } from "./match.js";
 import { openApplicationForm, fillApplication } from "./apply.js";
 import { loadPersonalContext } from "./context.js";
 import { generateTailoredResume } from "./resumeGenerator.js";
@@ -32,6 +32,18 @@ interface Suggestion {
   title: string;
   url: string;
   location: string;
+  /**
+   * True when the location came from reading the posting rather than from
+   * the board's own listing, so it is shown as worth confirming rather
+   * than stated flatly.
+   */
+  locationUnconfirmed?: boolean;
+  /**
+   * Sites the POSTING names that the board's listing did not. Multi-site
+   * roles are common, and the site the candidate can actually reach is
+   * often not the one the board chose to show.
+   */
+  alsoInPosting?: string;
   score: number;
   reasoning: string;
   offLocation: boolean;
@@ -44,7 +56,14 @@ function printSuggestions(suggestions: Suggestion[], minScore: number): void {
   console.log(`\n${suggestions.length} posting(s) read in full, best first - ${overBar} at or above your minimum score of ${minScore}:`);
   for (const s of suggestions) {
     const flags = `${s.meetsBar ? "" : "  (below your score bar)"}${s.offLocation ? "  ! outside your preferred locations" : ""}`;
-    console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${s.location || "location not stated"})${flags}`);
+    // Three distinct states, and collapsing them loses the one that
+    // matters: stated by the board, read out of the posting (so worth a
+    // glance), or genuinely absent from both - which is still shown,
+    // flagged, rather than left to be inferred from a blank.
+    const where = s.location
+      ? `${s.location}${s.alsoInPosting ? `; the posting also names ${s.alsoInPosting}` : ""}${s.locationUnconfirmed ? " - from the posting, worth confirming" : ""}`
+      : "location not stated on the board or in the posting - check it yourself";
+    console.log(`  [${String(s.score).padStart(3)}] ${s.title} (${where})${flags}`);
     console.log(`        ${s.reasoning}`);
     console.log(`        ${s.url}`);
   }
@@ -403,20 +422,36 @@ try {
       // and a genuinely reasonable shortlist rendered as zero suggestions.
       // The score and the bar are both shown instead, and the person picks.
       const suggestions = ranked
-        .map((r) => ({
-          title: r.job.title,
-          url: r.job.url,
-          location: r.job.location,
-          score: Math.round(r.score),
-          reasoning: r.reasoning,
-          // Advisory only - the posting is suggested either way, and the
-          // shell shows this as a flag rather than hiding the row.
-          offLocation:
-            !!r.job.location.trim() &&
-            !!criteria.acceptableLocations?.length &&
-            !criteria.acceptableLocations.some((l) => r.job.location.toLowerCase().includes(l.toLowerCase())),
-          meetsBar: r.score >= minMatchScore,
-        }));
+        .map((r) => {
+          // The board's own listing first, the description second. Some
+          // boards state a location only inside the posting - measured on a
+          // Rippling ATS board, where every location sits outside the link
+          // the scraper reads - so a shortlist showed "location not stated"
+          // for a role plainly based in Alpharetta, GA.
+          //
+          // `locationUnconfirmed` marks the description-derived case, which
+          // is reported as needing a look rather than presented with the
+          // same confidence as a location the board stated outright.
+          const fromBoard = r.job.location.trim();
+          const fromPosting = r.locationFromDescription;
+          const { location, alsoInPosting, everywhere } = combineLocations(fromBoard, fromPosting);
+          return {
+            title: r.job.title,
+            url: r.job.url,
+            location,
+            alsoInPosting,
+            locationUnconfirmed: !fromBoard && !!fromPosting,
+            score: Math.round(r.score),
+            reasoning: r.reasoning,
+            // Advisory only - the posting is suggested either way, and the
+            // shell shows this as a flag rather than hiding the row.
+            offLocation:
+              !!everywhere.trim() &&
+              !!criteria.acceptableLocations?.length &&
+              !criteria.acceptableLocations.some((l) => everywhere.toLowerCase().includes(l.toLowerCase())),
+            meetsBar: r.score >= minMatchScore,
+          };
+        });
 
       printSuggestions(suggestions, minMatchScore);
 

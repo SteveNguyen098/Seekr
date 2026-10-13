@@ -217,6 +217,55 @@ for (const c of CASES) {
   }
 }
 
+// A board whose postings state their location OUTSIDE the title anchor,
+// as a Rippling ATS board does. All 58 of its postings arrived with none.
+{
+  console.log("\nlistJobs - location outside the posting's anchor");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const listing = await listJobs(page, url("careers/location-outside-anchor.html"));
+  await page.close();
+  const jobs = listing.jobs;
+  const byTitle = (needle: RegExp) => jobs.find((j) => needle.test(j.title));
+  const ap = byTitle(/Accounts Payable/);
+  const ba = byTitle(/Junior Business Analyst/);
+  const ca = byTitle(/Compliance Analyst/);
+
+  const checks: [string, boolean, string][] = [
+    ["all three postings found once each", jobs.length === 3, `got ${jobs.length}: ${jobs.map((j) => j.title).join(" | ")}`],
+    [
+      "THE BUG: a location outside the anchor is found",
+      ap?.location === "Boca Raton, FL",
+      `got "${ap?.location}"`,
+    ],
+    [
+      "...for each posting, not borrowed from a neighbour",
+      ba?.location === "Alpharetta, GA",
+      `got "${ba?.location}"`,
+    ],
+    [
+      "THE BUG: the card's 'View job' link is not read as its location",
+      jobs.every((j) => !/view job/i.test(j.location)),
+      jobs.map((j) => j.location).join(" | "),
+    ],
+    [
+      "the department is not taken as the location",
+      jobs.every((j) => !/^(Accounting|Legal Operations|Compliance)$/.test(j.location)),
+      jobs.map((j) => j.location).join(" | "),
+    ],
+    [
+      "a posting that states its location INSIDE the anchor still works",
+      ca?.location === "Remote (United States)",
+      `got "${ca?.location}"`,
+    ],
+    ["titles are unaffected by the climb", ap?.title === "Accounts Payable Coordinator", `got "${ap?.title}"`],
+    ["every posting has a location", jobs.every((j) => !!j.location.trim()), ""],
+  ];
+  for (const [name, ok, detail] of checks) {
+    ok ? passed++ : failed++;
+    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${ok ? "" : ` — ${detail}`}`);
+  }
+}
+
 await browser.close();
 
 // boardPageUrl: pure, and the silent half of board pagination. Appending

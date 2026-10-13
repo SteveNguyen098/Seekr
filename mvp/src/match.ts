@@ -23,6 +23,22 @@ export interface RankedJob {
   job: CandidateJob;
   score: number;
   reasoning: string;
+  /**
+   * Where the DESCRIPTION says the role is based, when the board's own
+   * listing did not say.
+   *
+   * Some boards state a location only inside the posting. Measured on a
+   * Rippling ATS board: every posting's location sits outside the link the
+   * scraper reads, so all 58 arrived with none, and the shortlist showed
+   * "location not stated" for a role that is plainly in Alpharetta, GA.
+   * The description is already being read here to score the role, so the
+   * location in it is free to collect.
+   *
+   * Empty when the description genuinely does not say - which is reported
+   * as such rather than guessed at, since a location inferred from a
+   * company's headquarters is worse than an honest blank.
+   */
+  locationFromDescription: string;
 }
 
 const MAX_DESC_CHARS = 6000;
@@ -41,8 +57,13 @@ const RANK_TOOL: Anthropic.Tool = {
             url: { type: "string", description: "The job posting URL, copied exactly." },
             score: { type: "number", description: "Fit score from 0 (no fit) to 100 (excellent fit)." },
             reasoning: { type: "string", description: "One or two sentences explaining the score." },
+            locationFromDescription: {
+              type: "string",
+              description:
+                "EVERY location the description names as a place this role can be based, exactly as stated, separated by \" / \" when there is more than one (e.g. \"Alpharetta, GA / Boca Raton, FL\", \"Remote (US)\", \"Hybrid - London\"). Multi-site postings are common and listing only one of the sites hides the one the candidate could actually take. Empty string if the description genuinely does not say - do not infer a location from the company's headquarters, and do not include a place mentioned for some other reason, such as a city named only to qualify a pay rate.",
+            },
           },
-          required: ["url", "score", "reasoning"],
+          required: ["url", "score", "reasoning", "locationFromDescription"],
         },
       },
     },
@@ -255,7 +276,14 @@ export async function rankJobs(
       !!r && typeof r === "object" && typeof (r as { url?: unknown }).url === "string" && Number.isFinite((r as { score?: unknown }).score)
     )
     .filter((r) => byUrl.has(r.url))
-    .map((r) => ({ job: byUrl.get(r.url)!, score: r.score, reasoning: String(r.reasoning ?? "") }));
+    .map((r) => ({
+      job: byUrl.get(r.url)!,
+      score: r.score,
+      reasoning: String(r.reasoning ?? ""),
+      locationFromDescription: String(
+        (r as { locationFromDescription?: unknown }).locationFromDescription ?? ""
+      ).replace(/\s+/g, " ").trim(),
+    }));
 
   // Scoring nothing at all is a failed call, not a board with no matches -
   // those are very different things to report, and silently returning an
@@ -282,4 +310,42 @@ export async function rankJobs(
   // reads to the person as the recommendation itself having changed.
   results.sort((a, b) => b.score - a.score || a.job.url.localeCompare(b.job.url));
   return results;
+}
+
+/**
+ * Reconciles the location a BOARD listed with the locations a POSTING
+ * names, which are often not the same thing.
+ *
+ * THE BUG this prevents was a regression introduced by the first attempt at
+ * reading locations out of descriptions. A board states one location; a
+ * multi-site posting names several, and the extra ones are the point.
+ * Measured on the top match of a live RAS Legal Group board: the board says
+ * "Boca Raton, FL" while the description also names Alpharetta, GA - 25
+ * miles from the candidate. Preferring the board's single answer hid the
+ * only site they could reach and left the row flagged "outside your
+ * preferred locations", which is worse than showing nothing at all.
+ *
+ * So the board's answer leads, since it is what the listing asserts, and
+ * any site the posting names that the board did not is carried alongside
+ * it. `everywhere` is for deciding whether a role is out of range: a role
+ * open in two cities is not off-location because the first one is.
+ */
+export function combineLocations(
+  fromBoard: string,
+  fromPosting: string
+): { location: string; alsoInPosting: string; everywhere: string } {
+  const board = fromBoard.trim();
+  const alsoInPosting = fromPosting
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && !board.toLowerCase().includes(part.toLowerCase()))
+    .join(" / ");
+  const location = board || fromPosting.trim();
+  return {
+    location,
+    // Only meaningful alongside a board location; with none, the posting's
+    // locations ARE the location rather than an addition to it.
+    alsoInPosting: board ? alsoInPosting : "",
+    everywhere: [location, board ? alsoInPosting : ""].filter(Boolean).join(" / "),
+  };
 }
