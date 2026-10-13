@@ -26,6 +26,7 @@ const SPECS = {
   labels: "test/labels.spec.mts",
   searchindex: "test/searchindex.spec.mts",
   combobox: "test/combobox.spec.mts",
+  pagination: "test/pagination.spec.mts",
   resumepath: "test/resumepath.spec.mts",
 };
 
@@ -721,6 +722,42 @@ const MUTATIONS = [
     fixture: "rippling-phone",
     from: "        const prefilled = tag === \"SELECT\" || tag === \"INPUT\" || tag === \"TEXTAREA\"\n          ? (el as HTMLInputElement).value || \"\"\n          : \"\";",
     to: '        const prefilled = "";',
+  },
+
+  {
+    // The reported symptom: "job board not being scanned properly due to
+    // it having multiple pages". The walk was Greenhouse-only, so a
+    // 4-page Rippling ATS board was scanned 17 of 58 deep.
+    bug: "walk only Greenhouse boards, leaving every other multi-page board one page deep",
+    source: "scrape",
+    spec: "pagination",
+    fixture: "",
+    from: "  const baseline = await listJobsOnePage(page, careerUrl);\n  absorb(baseline);",
+    to: "  const baseline = await listJobsOnePage(page, careerUrl);\n  absorb(baseline);\n  if (!/greenhouse\\.io/.test(careerUrl)) return { jobs: collected, rows: collected.length, statedTotal: await statedTotal(page) };",
+  },
+  {
+    bug: "assume page 1 is every board's first page, skipping a zero-based board's first page",
+    source: "scrape",
+    spec: "pagination",
+    fixture: "",
+    from: "  if (nextPage === 1) {\n    const probe = await listJobsOnePage(page, boardPageUrl(careerUrl, 1));",
+    to: "  if (false) {\n    const probe = await listJobsOnePage(page, boardPageUrl(careerUrl, 1));",
+  },
+  {
+    bug: "keep walking a board that serves the same postings for every page",
+    source: "scrape",
+    spec: "pagination",
+    fixture: "",
+    from: "    if (batch.jobs.length === 0) break;\n    if (!absorb(batch)) break;",
+    to: "    if (batch.jobs.length === 0) break;\n    absorb(batch);",
+  },
+  {
+    bug: "sum rows across re-read pages, inflating them past a stated total",
+    source: "scrape",
+    spec: "pagination",
+    fixture: "",
+    from: "    rows = collected.length;",
+    to: "    rows += (batch as { rows?: number }).rows ?? 0;",
   },
 
   // ---- board coverage: a partial scan must not pass as a complete one ----

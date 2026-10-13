@@ -95,27 +95,86 @@ export function boardPageUrl(careerUrl: string, pageNum: number): string {
  * to the last page instead - which would otherwise repeat forever.
  */
 export async function listJobs(page: Page, careerUrl: string): Promise<BoardListing> {
-  if (!/greenhouse\.io/.test(careerUrl)) {
-    const { jobs, rows } = await listJobsOnePage(page, careerUrl);
-    return { jobs, rows, statedTotal: await statedTotal(page) };
-  }
-
   const collected: JobPosting[] = [];
   const seenUrls = new Set<string>();
+  // What a stated total is compared against, kept current as pages arrive.
   let rows = 0;
 
-  for (let pageNum = 1; pageNum <= MAX_BOARD_PAGES; pageNum++) {
-    const batch = await listJobsOnePage(page, boardPageUrl(careerUrl, pageNum));
-    if (batch.jobs.length === 0) break;
-    rows += batch.rows;
-
+  // Adds a batch and reports whether any of it was new, which is what the
+  // walk below keys its decisions on.
+  //
+  // Deliberately does NOT accumulate batch.rows. A walk re-reads pages it
+  // has already seen - the convention probe below duplicates the baseline
+  // by design, and a board that ignores the page parameter serves the same
+  // postings every time - so summing them inflates the count. Measured:
+  // Greenhouse with no page parameter reported 256 rows for 206 postings,
+  // and since `rows` is what a stated total is compared against, inflating
+  // it would hide exactly the shortfall it exists to reveal.
+  const absorb = (batch: { jobs: JobPosting[] }): boolean => {
     const before = seenUrls.size;
     for (const job of batch.jobs) {
       if (seenUrls.has(job.url)) continue;
       seenUrls.add(job.url);
       collected.push(job);
     }
-    if (seenUrls.size === before) break;
+    rows = collected.length;
+    return seenUrls.size > before;
+  };
+
+  // The URL EXACTLY as given is always the baseline, before any page
+  // parameter is invented for it. That ordering is the safety property: a
+  // board that breaks or empties when handed an unexpected `page` can never
+  // cost us the postings we would otherwise have had.
+  const baseline = await listJobsOnePage(page, careerUrl);
+  absorb(baseline);
+
+  // A search index was read, so the whole board is already here and
+  // paging the DOM would re-read the same index once per page.
+  if (baseline.complete) {
+    // The index's own row count, which is the number a stated total
+    // counts: 613 rows for 354 distinct postings on the measured board,
+    // because a role open in several places is indexed once per location.
+    return { jobs: collected, rows: baseline.rows, statedTotal: await statedTotal(page) };
+  }
+
+  // Where to walk from. Boards disagree about which number their first page
+  // is, and the disagreement is measured, not theoretical:
+  //
+  //   Greenhouse (Sony)      page=1 is the first page   50/50/50/43 of 193
+  //   Rippling ATS (RAS)     page=0 is the first page   17/20/17/4 of 58
+  //
+  // When the pasted URL states a page, that settles it: the baseline IS
+  // that page, so the walk continues from the next one.
+  const statedPage = Number(new URL(careerUrl).searchParams.get("page"));
+  let nextPage = Number.isInteger(statedPage) && statedPage >= 0 ? statedPage + 1 : 1;
+
+  // With no page stated, the board's own default could be either
+  // convention, so page 1 is PROBED rather than assumed. If it returns what
+  // the baseline already had, the baseline was page 1 and the walk goes on
+  // from 2; if it returns something new, the baseline was page 0 and that
+  // new page counts. Either way nothing is guessed and nothing is skipped -
+  // a bare Rippling ATS URL returns 17 of 58, so assuming the Greenhouse
+  // convention here would have silently dropped its first page.
+  if (nextPage === 1) {
+    const probe = await listJobsOnePage(page, boardPageUrl(careerUrl, 1));
+    if (probe.jobs.length === 0) {
+      return { jobs: collected, rows, statedTotal: await statedTotal(page) };
+    }
+    absorb(probe);
+    nextPage = 2;
+  }
+
+  for (; nextPage <= MAX_BOARD_PAGES; nextPage++) {
+    const batch = await listJobsOnePage(page, boardPageUrl(careerUrl, nextPage));
+    // Two independent stops, because boards fail differently: a
+    // well-behaved one serves an empty page past the end (measured: RAS
+    // page=4 returns 0), while one that clamps out-of-range requests to
+    // its last page, or ignores the parameter altogether, keeps serving
+    // postings we have already seen. Lever does the latter - 68 postings
+    // at page=0, 1 and 2 alike - so without the second stop a Lever board
+    // would be fetched 25 times to learn nothing.
+    if (batch.jobs.length === 0) break;
+    if (!absorb(batch)) break;
   }
 
   return { jobs: collected, rows, statedTotal: await statedTotal(page) };
@@ -158,7 +217,7 @@ export async function statedTotal(page: Page): Promise<number | null> {
 async function listJobsOnePage(
   page: Page,
   careerUrl: string
-): Promise<{ jobs: JobPosting[]; rows: number }> {
+): Promise<{ jobs: JobPosting[]; rows: number; complete?: boolean }> {
   // Attached before navigation, because the board's search query fires
   // during page load - a listener added afterwards sees nothing.
   const searchIndex = watchForSearchIndex(page);
@@ -176,7 +235,12 @@ async function listJobsOnePage(
       // Falls through to DOM scraping on an empty read rather than
       // reporting an empty board: an index whose fields are named
       // differently yields no postings here, and the DOM is still there.
-      if (fromIndex.postings.length) return { jobs: fromIndex.postings, rows: fromIndex.rows };
+      // `complete`: an index read enumerates the whole board in one go, so
+      // the caller must not then page the DOM - each page would re-read the
+      // same index and return the same postings.
+      if (fromIndex.postings.length) {
+        return { jobs: fromIndex.postings, rows: fromIndex.rows, complete: true };
+      }
     }
   } finally {
     searchIndex.stop();
