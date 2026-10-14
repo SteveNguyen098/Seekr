@@ -307,6 +307,61 @@ const CASES: Case[] = [
     },
   },
   {
+    file: "rippling-rating-scale.html",
+    bug: "a required question built as an ARIA rating scale was invisible - not answered, not skipped, absent from the report",
+    check(fields, t) {
+      const consent = fields.find((f) => /background check/i.test(f.label));
+      t.ok("THE BUG: the rating scale is discovered at all", !!consent);
+      t.is("it is marked as a rating scale, not a combobox", consent?.isAriaRadioGroup, true);
+      t.is("...and so is not routed down the open-a-dropdown path", consent?.isCombobox, false);
+      t.is(
+        "its four options are read from the boxes themselves",
+        JSON.stringify(consent?.options),
+        JSON.stringify(["Strong No", "No", "Yes", "Strong Yes"])
+      );
+      t.ok("the question text is its label", /consent to a background check/i.test(consent?.label ?? ""), consent?.label ?? "");
+      t.is(
+        "treated as required, though the form marks nothing required",
+        consent?.required,
+        true
+      );
+
+      const auth = fields.find((f) => /authorized to work/i.test(f.label));
+      t.is("a second scale on the same form is found too", auth?.isAriaRadioGroup, true);
+
+      // The wrapper around real inputs must NOT become a field: its two
+      // members are answered through the ordinary radio-group path, and
+      // discovering the wrapper too had the question both filled and
+      // reported as an unfillable div.
+      const scales = fields.filter((f) => f.isAriaRadioGroup);
+      t.is("only the two input-free scales are scales", scales.length, 2);
+      t.ok(
+        "a radiogroup wrapping native inputs is not treated as a scale",
+        !fields.some((f) => f.isAriaRadioGroup && /text message/i.test(f.label)),
+        scales.map((s) => s.label).join(" | ")
+      );
+      // The guard above only says it is not a SCALE. This one says it is
+      // not discovered at all, which is the part that matters: discovered
+      // as a plain DIV, the wrapper reaches the collector's else branch and
+      // the question is reported as "a div control Seekr does not know how
+      // to fill yet" while its own inputs are being filled correctly.
+      //
+      // Written after the mutation checker reported the discovery guard as
+      // MISSED - the assertion above passes with that guard removed,
+      // because the scale test is a different guard entirely.
+      t.ok(
+        "THE BUG: and is not discovered as a field at all",
+        !fields.some((f) => f.tag === "DIV" && /text message/i.test(f.label)),
+        fields.filter((f) => f.tag === "DIV").map((f) => f.label.slice(0, 40)).join(" | ")
+      );
+      t.ok(
+        "...while its member radios are still discovered",
+        fields.filter((f) => f.type === "radio" && /consent to receiving text/i.test(f.label)).length === 2,
+        String(fields.filter((f) => f.type === "radio").length)
+      );
+    },
+  },
+  {
     file: "rippling-phone-code-prefilled.html",
     bug: "a required country code that was already set to '+1 US' was reported as a blocking unlabelled field",
     check(fields, t) {

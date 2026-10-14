@@ -21,6 +21,18 @@ const SOURCES = {
 };
 const ORIGINAL = Object.fromEntries(Object.entries(SOURCES).map(([k, p]) => [k, fs.readFileSync(p, "utf-8")]));
 
+// Anchors are written with newlines, but a file git has touched comes back
+// with CRLF - and on Windows git does that routinely (it warns about it on every
+// add). A multi-line anchor then matches nothing and its mutation is
+// reported stale, which looks like a code change and is really just line
+// endings. Measured: after one `git checkout src/scrape.ts`, four
+// multi-line mutations in that file went stale at once while every
+// single-line one still matched.
+//
+// Matching happens on a normalised copy; the RESTORE still writes the
+// original bytes, so the byte-identical guarantee below is unaffected.
+const asLf = (text) => text.split("\r\n").join("\n");
+
 // Which spec proves which kind of guard.
 const SPECS = {
   fields: "test/fixtures.spec.mts",
@@ -690,6 +702,46 @@ const MUTATIONS = [
     to: "  return p;",
   },
   {
+    // The routing change that lets a background-screening consent reach
+    // the normal answering path. Widening it would hand every other kind
+    // of consent to the model as well - marketing, third-party data
+    // sharing - which the blanket skip exists to keep out.
+    bug: "treat any consent question as a background-screening consent",
+    spec: "labels",
+    fixture: "",
+    from: "  return consents && toScreening;",
+    to: "  return consents;",
+  },
+  {
+    // The widget was invisible to discovery: a required question absent
+    // from the report entirely.
+    bug: "stop looking for an ARIA rating scale, so the whole question disappears",
+    fixture: "rating-scale",
+    from: "\"input, textarea, select, [role='combobox'], [role='radiogroup']\"",
+    to: "\"input, textarea, select, [role='combobox']\"",
+  },
+  {
+    bug: "discover a radiogroup that wraps native inputs, answering one question twice",
+    fixture: "rating-scale",
+    from: '        if (el.getAttribute("role") === "radiogroup" && el.querySelector("input") !== null) return null;',
+    to: "        if (false) return null;",
+  },
+  {
+    bug: "treat a rating scale as optional, though the form marks nothing required",
+    fixture: "rating-scale",
+    from: "        const requiredForReport = required || isAriaRadioGroup;",
+    to: "        const requiredForReport = required;",
+  },
+  {
+    // Caught by its own test on the way in: ranking longest-first put a
+    // plain "Yes" on the "Strong Yes" box.
+    bug: "match a scale option by containment only, so 'Yes' ticks 'Strong Yes'",
+    spec: "combobox",
+    fixture: "",
+    from: "    const exact = labelled.filter(\n      (option) => typeof candidate === \"string\" && option.text.trim().toLowerCase() === candidate.trim().toLowerCase()\n    );",
+    to: "    const exact: typeof labelled = [];",
+  },
+  {
     // The cascade: one unanswerable question took out the three below it,
     // because the listbox it left open covered them.
     bug: "close a dropdown with Escape on the trigger, which the widget ignores",
@@ -969,12 +1021,13 @@ try {
     const file = SOURCES[srcKey];
     const original = ORIGINAL[srcKey];
 
-    if (!original.includes(m.from)) {
+    const originalLf = asLf(original);
+    if (!originalLf.includes(m.from)) {
       console.log(`SKIP    ${m.bug}\n        (anchor not found in ${file} - mutation is stale, fix it)`);
       missed++;
       continue;
     }
-    fs.writeFileSync(file, original.replace(m.from, m.to));
+    fs.writeFileSync(file, originalLf.replace(m.from, m.to));
 
     let red = false;
     try {

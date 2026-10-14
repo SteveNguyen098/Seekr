@@ -14,7 +14,7 @@
 import { chromium } from "playwright";
 import { pathToFileURL } from "url";
 import path from "path";
-import { degreeCandidates, reachability, selectComboboxOption } from "../src/apply.js";
+import { degreeCandidates, pickAriaRadioOption, reachability, selectComboboxOption } from "../src/apply.js";
 
 const FIXTURE = pathToFileURL(
   path.resolve(import.meta.dirname, "fixtures", "rippling-dropdown-covers-fields.html")
@@ -107,6 +107,44 @@ console.log("\nthe guard proves the cascade is real");
     (await reachability(page, "#aitools")) === "blocked",
     await reachability(page, "#aitools")
   );
+  await page.close();
+}
+
+console.log("\nan ARIA rating scale is clicked, not set");
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.goto(
+    pathToFileURL(path.resolve(import.meta.dirname, "fixtures", "rippling-rating-scale.html")).href,
+    { waitUntil: "load" }
+  );
+
+  const consent = '[role="radiogroup"]#input-65';
+  const picked = await pickAriaRadioOption(page, consent, ["Yes"]);
+  check("THE BUG: a scale question can be answered at all", picked === "Yes", String(picked));
+  check(
+    "THE TRAP: 'Yes' does not land on 'Strong Yes'",
+    // The options differ only by a prefix and option matching accepts
+    // containment BOTH ways, so a shorter answer would otherwise match a
+    // longer option - putting an emphatic answer on the application that
+    // the candidate never gave.
+    (await page.getAttribute('[role="radio"][aria-label="Yes"]', "aria-checked")) === "true",
+    String(await page.getAttribute('[role="radio"][aria-label="Yes"]', "aria-checked"))
+  );
+  check(
+    "...and the emphatic box is left alone",
+    (await page.getAttribute('[role="radio"][aria-label="Strong Yes"]', "aria-checked")) === "false"
+  );
+
+  const auth = '[role="radiogroup"]#input-70';
+  const strong = await pickAriaRadioOption(page, auth, ["Strong No"]);
+  check("an emphatic answer still reaches its own box", strong === "Strong No", String(strong));
+  check(
+    "and the plain box is not the one ticked",
+    (await page.getAttribute('#input-70 [role="radio"][aria-label="No"]', "aria-checked")) === "false"
+  );
+
+  const missing = await pickAriaRadioOption(page, auth, ["Maybe"]);
+  check("an answer matching no box is reported, not forced", missing === null, String(missing));
   await page.close();
 }
 

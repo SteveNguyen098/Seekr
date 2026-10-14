@@ -79,6 +79,12 @@ export interface DiscoveredField {
   /** Human-readable reason for skipAlways, surfaced in the report. */
   skipReason: string;
   /**
+   * True for a rating scale built as an ARIA radiogroup of div[role="radio"]
+   * boxes, with no native input anywhere in it. Answered by CLICKING the
+   * matching box, since there is nothing to set and nothing to open.
+   */
+  isAriaRadioGroup: boolean;
+  /**
    * The value the field already held at discovery, before anything was
    * filled. Only used to tell "this needs an answer" apart from "this
    * already has one", which is the difference between a report the user
@@ -480,6 +486,38 @@ export function isAnswerableCheckboxGroup(
   return true;
 }
 
+/**
+ * A pre-employment BACKGROUND SCREENING consent question.
+ *
+ * Matched so it can reach the normal answering path instead of the generic
+ * consent skip, which caught it on the word "consent" and reported
+ * "consent/legal field, left for you to complete" - leaving a required
+ * question blank on five applications.
+ *
+ * The answer is NOT decided here. Only the routing is: whether the question
+ * is answerable at all. What the answer IS comes from the candidate's own
+ * context file, where they have stated it, because a legal consent is
+ * theirs to give and hardcoding one would answer for every user of this
+ * tool. That distinction is the lesson from AI_POLICY_CANDIDATES, which
+ * baked a flat "No" into shared code and then contradicted the candidate
+ * on every form that asked.
+ *
+ * Deliberately narrow on both halves: a consent verb AND a
+ * background-screening noun. "Describe your background" has the noun and
+ * no verb; "do you consent to us sharing your data with third parties" has
+ * the verb and a different subject, and is also caught by the
+ * broader-scope exclusion.
+ */
+export function isBackgroundCheckConsent(label: string): boolean {
+  if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
+  const consents = /\b(consent|agree|authorize|authorise|permit|willing)\b/i.test(label);
+  const toScreening =
+    /\bbackground\s+(check|screen|screening|investigation|verification|inquiry)\b/i.test(label) ||
+    /\b(criminal|credit)\s+(background\s+)?(check|record|history|screening)\b/i.test(label) ||
+    /\bconsumer\s+report\b/i.test(label);
+  return consents && toScreening;
+}
+
 export function isStandardRecruitmentConsent(label: string): boolean {
   if (CONSENT_BROADER_SCOPE_RE.test(label)) return false;
   // "Privacy Notice Acknowledgement" style fields are inherently the same
@@ -691,12 +729,27 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
   // aren't built on a real <input> at all - confirmed live on Rippling's
   // ATS, where gender/veteran/disability/hispanic-latino all render as a
   // bare <div role="combobox">, invisible to the narrower query alone.
-  return ctx.$$eval("input, textarea, select, [role='combobox']", (els) =>
+  // [role="radiogroup"] catches a rating-scale question built entirely out
+  // of divs - no native input anywhere in it. Confirmed live on Rippling's
+  // ATS, where a required "Do you consent to a background check..." renders
+  // as four div[role="radio"] boxes (Strong No / No / Yes / Strong Yes).
+  // Without this the whole question was invisible: not answered, and not
+  // even reported as skipped.
+  return ctx.$$eval("input, textarea, select, [role='combobox'], [role='radiogroup']", (els) =>
     els
       .map((el, i) => {
         const tag = el.tagName;
         const type = (el as HTMLInputElement).type || tag.toLowerCase();
         if (["hidden", "submit", "button"].includes(type)) return null;
+
+        // A radiogroup that WRAPS native inputs is a container, not a
+        // control: its members are discovered and answered individually,
+        // through the ordinary radio-group path. Dropped here so it is
+        // neither answered twice nor reported as an unknown widget -
+        // measured on the text-message consent question, which was filled
+        // correctly via its two inputs AND listed as "a div control Seekr
+        // does not know how to fill yet" for the wrapper around them.
+        if (el.getAttribute("role") === "radiogroup" && el.querySelector("input") !== null) return null;
 
         // Generic UI chrome that is never a real question. Declared here
         // (inside the serialized callback, not at module scope, which the
@@ -1054,11 +1107,56 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         // separate JS state - a raw .fill() looks like it worked, then gets
         // silently reverted on the widget's next render. These need real
         // click-to-open-and-select interaction (see selectComboboxOption).
+        // An ARIA rating scale: the group is the field, and its
+        // div[role="radio"] children are the options. Checked BEFORE
+        // isCombobox, because such a group can also carry aria-haspopup on
+        // some widgets and must not be routed down the open-a-dropdown
+        // path - there is no dropdown to open, only boxes to click.
+        // A radiogroup containing NATIVE inputs is already handled by the
+        // ordinary radio-group path, which groups those inputs by name.
+        // Measured on the same form: the text-message consent question is
+        // a radiogroup wrapping two real <input type="radio">, so without
+        // this test that one question was discovered TWICE - once as the
+        // group and once as its members - and would have been answered
+        // down two different paths.
+        const isAriaRadioGroup =
+          el.getAttribute("role") === "radiogroup" && el.querySelector("input") === null;
+        const ariaRadioOptions = isAriaRadioGroup
+          ? Array.from(el.querySelectorAll('[role="radio"]'))
+              .map(
+                (radio) =>
+                  radio.getAttribute("aria-label")?.trim() ||
+                  (radio as HTMLElement).innerText?.replace(/\s+/g, " ").trim() ||
+                  ""
+              )
+              .filter(Boolean)
+          : [];
+
         const isCombobox =
-          el.getAttribute("role") === "combobox" ||
-          el.getAttribute("aria-autocomplete") === "list" ||
-          el.getAttribute("aria-haspopup") === "true" ||
-          isDecorativeSelect;
+          !isAriaRadioGroup &&
+          (el.getAttribute("role") === "combobox" ||
+            el.getAttribute("aria-autocomplete") === "list" ||
+            el.getAttribute("aria-haspopup") === "true" ||
+            isDecorativeSelect);
+
+        // The group's own options, known up front from the DOM rather than
+        // by opening anything - unlike a combobox, whose options only exist
+        // once it is clicked.
+        if (isAriaRadioGroup) options = ariaRadioOptions;
+
+        // These scales carry NO required marker of any kind - measured
+        // across three live forms: no required attribute, no aria-required,
+        // no asterisk, and no "Required" label anywhere in the question's
+        // block. Yet the candidate reported the form refusing to submit
+        // with them blank, so the requiredness is real and simply never
+        // expressed in the DOM.
+        //
+        // Treated as required when the form says nothing, because the two
+        // mistakes are not symmetric: flagging an optional question costs a
+        // line of noise, while missing a required one leaves an application
+        // that cannot be submitted and nothing on screen explaining why -
+        // which is the failure that was reported.
+        const requiredForReport = required || isAriaRadioGroup;
 
         // data-testid is a common automation-hook convention (confirmed
         // live: Rippling's file-upload widgets have empty id/name/
@@ -1404,7 +1502,7 @@ export async function discoverFields(ctx: FormContext): Promise<DiscoveredField[
         const prefilled = tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA"
           ? (el as HTMLInputElement).value || ""
           : "";
-        return { selector, tag, type, label: label.trim(), required, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "", prefilled };
+        return { selector, tag, type, label: label.trim(), required: requiredForReport, options, isCombobox, idOrName, multiSelect, groupName, groupQuestion, radioValue, skipAlways, skipReason, hasVisibleLabelPartner, ownLabelWasAffirmation, inEducationSection, nameAttr: nameAttr || "", prefilled, isAriaRadioGroup };
       })
       .filter((f): f is NonNullable<typeof f> => f !== null && f.type !== "search")
   );
@@ -2131,6 +2229,73 @@ async function selectFabricMenuOption(
 }
 
 /**
+ * Picks an option on an ARIA rating scale - a radiogroup whose options are
+ * div[role="radio"] boxes - by clicking the matching box.
+ *
+ * THE GAP: measured on Rippling's ATS, a required question renders as four
+ * such boxes (Strong No / No / Yes / Strong Yes) with no native input
+ * anywhere in the group. The discovery query looked for
+ * input/textarea/select/[role=combobox], so the whole question was
+ * invisible - not answered, and not even reported as skipped, which is the
+ * failure mode that leaves a required field blank with nothing said about
+ * it.
+ *
+ * Clicked rather than set, because there is no value to write: selection
+ * lives in the widget's own state and shows up as aria-checked. That is
+ * also what makes it verifiable here, so a click that did not register is
+ * reported instead of assumed.
+ */
+export async function pickAriaRadioOption(
+  ctx: FormContext,
+  selector: string,
+  candidates: (string | RegExp)[]
+): Promise<string | null> {
+  const radios = await ctx.$$(`${selector} [role="radio"]`);
+  if (radios.length === 0) return null;
+
+  const labelled: { handle: (typeof radios)[number]; text: string }[] = [];
+  for (const radio of radios) {
+    const text =
+      (await radio.getAttribute("aria-label").catch(() => null))?.trim() ||
+      (await radio.textContent().catch(() => ""))?.replace(/\s+/g, " ").trim() ||
+      "";
+    if (text) labelled.push({ handle: radio, text });
+  }
+
+  for (const candidate of candidates) {
+    // An EXACT match always wins, and the scale is why. Its options differ
+    // only by a prefix - "Yes" and "Strong Yes" - while optionTextMatches()
+    // accepts containment in BOTH directions, so "Strong Yes" contains
+    // "Yes" and any ordering of a containment-only search puts one of the
+    // two answers on the wrong box. Caught by its own test: ranking longest
+    // first, meant to protect "Strong Yes", made a plain "Yes" tick "Strong
+    // Yes" - an emphatic answer the candidate never gave, on a live
+    // application.
+    //
+    // Containment then runs as a fallback for a wordier answer ("Yes, I
+    // consent"), preferring the LONGEST option that matches so an emphatic
+    // answer still reaches its own box rather than the plain one.
+    const exact = labelled.filter(
+      (option) => typeof candidate === "string" && option.text.trim().toLowerCase() === candidate.trim().toLowerCase()
+    );
+    const contained = labelled
+      .filter((option) => optionTextMatches(option.text, candidate))
+      .sort((a, b) => b.text.length - a.text.length);
+
+    for (const option of [...exact, ...contained]) {
+      const clicked = await option.handle.click().then(() => true).catch(() => false);
+      if (!clicked) continue;
+      await delay(200);
+      // The widget's own state, not ours: a click that did not take leaves
+      // aria-checked false, and saying so beats reporting a filled field.
+      const checked = await option.handle.getAttribute("aria-checked").catch(() => null);
+      if (checked === "true") return option.text;
+    }
+  }
+  return null;
+}
+
+/**
  * Shuts an open dropdown, and VERIFIES it shut.
  *
  * THE BUG, measured end to end on a live Rippling form: an open listbox
@@ -2370,6 +2535,22 @@ async function answerDirectly(
   await fillTextVerified(formCtx, field.selector, field.label, candidates[0], filled, skipped, field.required, true, false, filledSelectors);
 }
 
+/**
+ * A note attached to a rating-scale field, right beside its own options.
+ *
+ * The same guidance sits in the prompt's general rules and was measured NOT
+ * to take: every factual question on such a scale still came back "Strong
+ * Yes"/"Strong No" - including "Strong Yes" to "Are you authorized to work
+ * in the United States?", which is emphasis standing in for a fact. Said
+ * again here, inches from where the option is chosen, rather than fifty
+ * lines up among a dozen other rules.
+ */
+function ratingScaleHint(field: AnswerableField): string {
+  if (!field.isAriaRadioGroup) return "";
+  if (!field.options.some((option) => /^strong/i.test(option.trim()))) return "";
+  return ' | NOTE: this is a yes/no question on a rating widget. Pick the plain "Yes" or "No" for a question of fact; use a "Strong" option only if it genuinely asks how strongly the candidate feels.';
+}
+
 interface AnswerableField {
   selector: string;
   label: string;
@@ -2380,6 +2561,13 @@ interface AnswerableField {
   type: string;
   options: string[];
   isCombobox: boolean;
+  /**
+   * A rating scale of div[role="radio"] boxes - clicked, not set. Optional
+   * because the synthetic fields assembled for radio and checkbox GROUPS
+   * are never one, and spelling a meaningless false at each of those sites
+   * would say less than leaving it off.
+   */
+  isAriaRadioGroup?: boolean;
   required: boolean;
   multiSelect: boolean;
 }
@@ -2568,7 +2756,7 @@ async function answerWithClaude(
   const fieldsBlock = fields
     .map(
       (f) =>
-        `- selector: ${f.selector} | label: "${f.label}" | ${f.required ? "[REQUIRED]" : "[optional]"}${f.multiSelect ? " | [MULTI-SELECT] (use \"values\", a list of every matching option)" : ""}${f.isCombobox && f.options.length === 0 ? " | TYPE: combobox (return a short target phrase)" : ""}${f.options.length ? ` | options: [${f.options.join(", ")}]` : ""}`
+        `- selector: ${f.selector} | label: "${f.label}" | ${f.required ? "[REQUIRED]" : "[optional]"}${f.multiSelect ? " | [MULTI-SELECT] (use \"values\", a list of every matching option)" : ""}${f.isCombobox && f.options.length === 0 ? " | TYPE: combobox (return a short target phrase)" : ""}${f.options.length ? ` | options: [${f.options.join(", ")}]` : ""}${ratingScaleHint(f)}`
     )
     .join("\n");
 
@@ -3346,7 +3534,11 @@ export async function fillCurrentPage(
       continue;
     }
 
-    if (CONSENT_RE.test(labelLower)) {
+    // A background-screening consent falls through to the normal answering
+    // path rather than the blanket consent skip below, so the candidate's
+    // own stated answer governs it. Placed BEFORE that skip, which caught
+    // it on the word "consent" and left a required question blank.
+    if (CONSENT_RE.test(labelLower) && !isBackgroundCheckConsent(field.label)) {
       skipped.push({ label: field.label || field.selector, reason: "consent/legal field, left for you to complete", required: field.required });
       continue;
     }
@@ -3592,7 +3784,19 @@ export async function fillCurrentPage(
     // were being discovered but then silently dropped here - appearing in
     // neither the filled nor skipped report, not even a "left blank"
     // signal.
-    if (field.tag === "SELECT" || field.tag === "INPUT" || field.tag === "TEXTAREA" || field.isCombobox) {
+    // isAriaRadioGroup joins the allowlist for the same reason isCombobox
+    // did, and it is the SECOND widget to be lost here: a rating scale is a
+    // DIV and not a combobox, so a required "Do you consent to a background
+    // check..." was discovered and then dropped right here - absent from
+    // the filled list, absent from the skipped list, absent from the
+    // report entirely. The else below exists so there is no third time.
+    if (
+      field.tag === "SELECT" ||
+      field.tag === "INPUT" ||
+      field.tag === "TEXTAREA" ||
+      field.isCombobox ||
+      field.isAriaRadioGroup
+    ) {
       // Give Claude the real, exact options for a combobox rather than
       // having it guess a plausible-sounding value blind - a guess like
       // "1-2 years" against real buckets of "0-1 years"/"2-3 years"/"+4
@@ -3608,7 +3812,21 @@ export async function fillCurrentPage(
         options = harvested.options;
         multiSelect = harvested.multiSelect;
       }
-      toAnswer.push({ selector: field.selector, label: field.label, tag: field.tag, type: field.type, options, isCombobox: field.isCombobox, required: field.required, multiSelect });
+      toAnswer.push({ selector: field.selector, label: field.label, tag: field.tag, type: field.type, options, isCombobox: field.isCombobox, isAriaRadioGroup: field.isAriaRadioGroup, required: field.required, multiSelect });
+    } else {
+      // A widget shape nothing above recognised. Reported rather than
+      // dropped, because this gate has now silently swallowed two
+      // different widget types - a bare div[role="combobox"] and a
+      // div[role="radiogroup"] rating scale - and in both cases the
+      // symptom was a required question missing from the report with
+      // nothing at all to say it had been seen. A named gap is findable;
+      // a silent one is only found by someone noticing a blank field on a
+      // submitted application.
+      skipped.push({
+        label: field.label || field.selector,
+        reason: `this is a ${field.tag.toLowerCase()} control Seekr does not know how to fill yet - please answer it manually`,
+        required: field.required,
+      });
     }
   }
 
@@ -3821,6 +4039,22 @@ export async function fillCurrentPage(
         const picked = await clickChoiceButton(formCtx, field.selector, [value]);
         if (picked) filled.push({ label: field.label, value: picked, generated: true, lowConfidence });
         else skipped.push({ label: field.label, reason: `could not find a matching button for "${value}" for this question`, required });
+        continue;
+      }
+
+      // An ARIA rating scale: no value to set and no dropdown to open, so
+      // the matching box is clicked and the widget's own aria-checked is
+      // read back to confirm it took. Placed before the combobox branch
+      // because that branch would try to open something that does not open.
+      if (field.isAriaRadioGroup) {
+        const picked = await pickAriaRadioOption(formCtx, field.selector, [value]);
+        if (picked) filled.push({ label: field.label, value: picked, generated: true, lowConfidence });
+        else
+          skipped.push({
+            label: field.label,
+            reason: `could not select "${value}" among this question's options [${field.options.join(", ")}]`,
+            required,
+          });
         continue;
       }
 

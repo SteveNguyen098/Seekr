@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+BUG: a required question was invisible - not answered, not skipped, absent
+from the report entirely.
+
+Measured on Rippling's ATS across five live application forms (3 to 9 such
+questions each). The question renders as an ARIA rating scale: a
+div[role="radiogroup"] holding four div[role="radio"] boxes, with NO native
+input anywhere inside it.
+
+  "Do you consent to a background check, in accordance with local law
+   and regulations?"      [xx Strong No] [x No] [check Yes] [checkcheck Strong Yes]
+
+Two separate faults made it vanish:
+
+  1. Field discovery queried input/textarea/select/[role=combobox], so the
+     group was never found at all.
+  2. Even once found, the collector that decides which fields go to the
+     model gates on tag === SELECT/INPUT/TEXTAREA || isCombobox. A rating
+     scale is a DIV and not a combobox, so it fell through that gate - the
+     SECOND widget type to be lost there, after a bare
+     div[role="combobox"]. The gate now has an else that REPORTS whatever
+     it does not recognise, so there is no third silent one.
+
+Also reproduced here, because it broke when the first fix went in:
+
+  - The last group WRAPS two native radio inputs. Those are already handled
+    by the ordinary radio-group path, so the wrapper must not be discovered
+    as a field of its own. It was, and the one question ended up both
+    correctly filled AND reported as "a div control Seekr does not know how
+    to fill yet".
+
+  - These scales carry NO required marker: no required attribute, no
+    aria-required, no asterisk, no "Required" text anywhere in the
+    question's block. That is faithful to the live forms, and the reason
+    such a question is treated as required anyway.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rippling - an ARIA rating scale</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 24px; }
+      .q { margin: 20px 0; max-width: 620px; }
+      [role="radiogroup"] { display: flex; gap: 10px; margin-top: 6px; }
+      [role="radio"] { border: 1px solid #999; padding: 6px 12px; cursor: pointer; }
+      [role="radio"][aria-checked="true"] { border-color: #2563eb; background: #eff6ff; }
+    </style>
+  </head>
+  <body>
+    <form>
+      <div class="q">
+        <span id="q1-label">Do you consent to a background check, in accordance with local law and regulations?</span>
+        <div role="radiogroup" id="input-65" aria-labelledby="q1-label">
+          <div data-value="1" role="radio" tabindex="0" aria-label="Strong No" aria-checked="false">
+            <span data-icon="STRONG_NO" aria-hidden="true"></span><p>Strong No</p>
+          </div>
+          <div data-value="2" role="radio" tabindex="-1" aria-label="No" aria-checked="false">
+            <span data-icon="CLOSE" aria-hidden="true"></span><p>No</p>
+          </div>
+          <div data-value="3" role="radio" tabindex="-1" aria-label="Yes" aria-checked="false">
+            <span data-icon="CHECK" aria-hidden="true"></span><p>Yes</p>
+          </div>
+          <div data-value="4" role="radio" tabindex="-1" aria-label="Strong Yes" aria-checked="false">
+            <span data-icon="STRONG_YES" aria-hidden="true"></span><p>Strong Yes</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="q">
+        <span id="q2-label">Are you authorized to work in the United States?</span>
+        <div role="radiogroup" id="input-70" aria-labelledby="q2-label">
+          <div data-value="1" role="radio" tabindex="0" aria-label="Strong No" aria-checked="false"><p>Strong No</p></div>
+          <div data-value="2" role="radio" tabindex="-1" aria-label="No" aria-checked="false"><p>No</p></div>
+          <div data-value="3" role="radio" tabindex="-1" aria-label="Yes" aria-checked="false"><p>Yes</p></div>
+          <div data-value="4" role="radio" tabindex="-1" aria-label="Strong Yes" aria-checked="false"><p>Strong Yes</p></div>
+        </div>
+      </div>
+
+      <!-- A radiogroup that wraps REAL inputs: a container, not a control. -->
+      <div class="q">
+        <span id="q3-label">Check Yes or No to indicate your agreement to receive text message updates</span>
+        <div role="radiogroup" aria-labelledby="q3-label">
+          <label><input type="radio" name="textMsgConsent" value="yes" /> Yes - I consent to receiving text messages</label>
+          <label><input type="radio" name="textMsgConsent" value="no" /> No - I do not consent to receiving text messages</label>
+        </div>
+      </div>
+    </form>
+
+    <script>
+      // Selection lives in the widget's own state and shows up as
+      // aria-checked, which is what makes a click verifiable.
+      Array.prototype.forEach.call(document.querySelectorAll('[role="radiogroup"]'), function (group) {
+        Array.prototype.forEach.call(group.querySelectorAll('[role="radio"]'), function (radio) {
+          radio.addEventListener("click", function () {
+            Array.prototype.forEach.call(group.querySelectorAll('[role="radio"]'), function (other) {
+              other.setAttribute("aria-checked", "false");
+            });
+            radio.setAttribute("aria-checked", "true");
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

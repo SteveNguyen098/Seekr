@@ -23,6 +23,7 @@ import {
   isDisciplineLabel,
   isSchoolLabel,
   isAiDisclosureLabel,
+  isBackgroundCheckConsent,
   isStandardRecruitmentConsent,
   sameIgnoringFormatting,
   isTickableAcknowledgement,
@@ -715,6 +716,33 @@ const AI_LABELS: { label: string; want: boolean; why: string }[] = [
   { label: "what are your salary expectations for this role?", want: false, why: "no ai mention" },
   { label: "do you have a 4 year degree?", want: false, why: "no ai mention" },
 ];
+
+// A background-screening consent must reach the normal answering path, so
+// the candidate's own stated answer governs it, while every other kind of
+// consent stays where it was.
+const BG_CHECK: { label: string; want: boolean; why: string }[] = [
+  { label: "Do you consent to a background check, in accordance with local law and regulations?", want: true, why: "THE BUG: the measured question, left blank on five applications" },
+  { label: "If offered a position of employment, do you consent to a background check, in accordance with local law and regulations?", want: true, why: "the same question, longer phrasing" },
+  { label: "Do you agree to a pre-employment background screening?", want: true, why: "agree + screening" },
+  { label: "Do you authorize us to obtain a consumer report?", want: true, why: "the FCRA wording for the same thing" },
+  { label: "Are you willing to undergo a criminal record check?", want: true, why: "willing + criminal record check" },
+
+  // Must NOT widen beyond background screening.
+  { label: "Describe your background and experience", want: false, why: "the noun with no consent verb" },
+  { label: "Do you consent to us sharing your data with third parties?", want: false, why: "a consent, but to something else" },
+  { label: "Do you consent to receiving marketing emails?", want: false, why: "the same" },
+  { label: "What is your educational background?", want: false, why: "not a consent at all" },
+  { label: "Do you agree to the Privacy Policy?", want: false, why: "handled by the recruitment-consent path instead" },
+];
+
+console.log("\nisBackgroundCheckConsent");
+for (const c of BG_CHECK) {
+  const got = isBackgroundCheckConsent(c.label);
+  const ok = got === c.want;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "PASS" : "FAIL"}  ${String(got).padEnd(5)} ${JSON.stringify(c.label.slice(0, 58))}`);
+  if (!ok) console.log(`        expected ${c.want} - ${c.why}`);
+}
 
 console.log("\nisAiDisclosureLabel");
 for (const c of AI_LABELS) {
