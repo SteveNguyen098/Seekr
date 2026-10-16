@@ -321,6 +321,19 @@ export function isSchoolLabel(labelLower: string): boolean {
   // Credential/qualifier questions first - several of them mention the
   // institution words in passing ("school year", "level of education").
   if (/degree|level of (education|study)|major|field of study|gpa|graduation|years? attended|did you graduate/i.test(labelLower)) return false;
+  // A question asking WHETHER a credential was earned is a yes/no question,
+  // not a request for an institution's name.
+  //
+  // THE BUG: "Did you earn a High School Diploma or GED?" matched on the
+  // words "high SCHOOL", so the profile's university was answered to it -
+  // typed into a four-box rating scale, which reported `failed to fill
+  // field` on a REQUIRED question across two of five applications in one
+  // batch. Georgia State University is not an answer to that question
+  // under any widget.
+  if (/\b(diploma|ged|certificate|certification)\b/i.test(labelLower)) return false;
+  if (/^\s*(did|do|have|are|is)\b[^?]*\b(earn|earned|complete|completed|attend|attended|finish|finished)\b/i.test(labelLower)) {
+    return false;
+  }
   return /(^|[^a-z])(school|university|college|institution)([^a-z]|$)/i.test(labelLower);
 }
 
@@ -3272,6 +3285,28 @@ export async function fillCurrentPage(
     // Fills a known, deterministic (non-AI-generated) value regardless of
     // whether the field is a plain input or a custom combobox.
     const setField = async (value: string) => {
+      // A rating scale is clicked, never typed into. Handled HERE rather
+      // than in each branch because every deterministic answer - school,
+      // degree, city, phone - comes through this one helper, and the "not a
+      // combobox, so it must be a text input" assumption below predates
+      // scales existing.
+      //
+      // THE BUG: "Did you earn a High School Diploma or GED?" is a scale,
+      // and isSchoolLabel matched it on the words "high SCHOOL", so this
+      // typed "Georgia State University" into it. The report then said
+      // `failed to fill field "#input-81"` on a REQUIRED question, on two
+      // of five applications in one batch.
+      if (field.isAriaRadioGroup) {
+        const picked = await pickAriaRadioOption(formCtx, field.selector, [value]);
+        if (picked) filled.push({ label: field.label, value: picked });
+        else
+          skipped.push({
+            label: field.label,
+            reason: `could not select "${value}" among this question's options [${field.options.join(", ")}]`,
+            required: field.required,
+          });
+        return;
+      }
       if (field.isCombobox) {
         const picked = await selectComboboxOption(formCtx, field.selector, [value]);
         if (picked) filled.push({ label: field.label, value: picked });

@@ -89,6 +89,16 @@ const SCHOOL: Case[] = [
   { label: "Graduation date", want: false, why: "a date field in the same section" },
   { label: "Did you graduate?", want: false, why: "yes/no, not an institution name" },
 
+  // THE BUG: "high SCHOOL" made this an institution question, so the
+  // profile's university was answered to it - typed into a four-box rating
+  // scale, reporting `failed to fill field` on a REQUIRED question across
+  // two of five applications in one batch.
+  { label: "Did you earn a High School Diploma or GED?", want: false, why: "THE BUG: asks WHETHER a credential was earned, not which institution" },
+  { label: "Did you complete high school?", want: false, why: "the same shape, shorter" },
+  { label: "Do you have a certificate from a trade school?", want: false, why: "a credential question mentioning school" },
+  { label: "Did you attend an accredited university?", want: false, why: "yes/no about attendance, not a name" },
+  { label: "Most recent school or institution", want: true, why: "still an institution question" },
+
   // The cases above all come back false on the institution words alone, so
   // none of them exercises the credential exclusion. These do: each names
   // an institution AND asks something that is not the institution's name.

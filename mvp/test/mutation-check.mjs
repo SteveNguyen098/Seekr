@@ -702,6 +702,29 @@ const MUTATIONS = [
     to: "  return p;",
   },
   {
+    // "high SCHOOL" made a credential question an institution question, so
+    // the profile's university was typed into a four-box rating scale -
+    // `failed to fill field` on a REQUIRED question, two of five
+    // applications in one batch.
+    bug: "read 'Did you earn a High School Diploma?' as a question about which school",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/\\b(diploma|ged|certificate|certification)\\b/i.test(labelLower)) return false;",
+    to: "  if (false) return false;",
+  },
+  {
+    bug: "stop excluding 'did you earn/attend...' from institution questions",
+    spec: "labels",
+    fixture: "",
+    from: "  if (/^\\s*(did|do|have|are|is)\\b[^?]*\\b(earn|earned|complete|completed|attend|attended|finish|finished)\\b/i.test(labelLower)) {\n    return false;\n  }",
+    to: "  if (false) {\n    return false;\n  }",
+  },
+  // NOT mutated: setField's rating-scale path. Every deterministic answer
+  // flows through that helper, but it lives in the fill loop, which no spec
+  // here can reach without an API key. Verified live instead - the two
+  // forms that reported `failed to fill field` on a required question now
+  // answer it Yes with zero required fields left.
+  {
     // The routing change that lets a background-screening consent reach
     // the normal answering path. Widening it would hand every other kind
     // of consent to the model as well - marketing, third-party data
