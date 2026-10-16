@@ -390,7 +390,15 @@ try {
 
     const candidates: CandidateJob[] = [];
     for (const { job } of shortlist.slice(0, MAX_CANDIDATES_TO_INSPECT)) {
-      const { text } = await getJobDescription(page, job.url);
+      // The board's own index already carried the description for some
+      // boards, and where it did, opening the posting is both slower and
+      // WORSE. On Kforce the posting url is an apply form: fetching it
+      // returned 4,254 characters of site navigation under the title
+      // "Submit Resume", identical to within 13 characters for two
+      // different jobs, with no trace of the real text. Every score came
+      // from a title and a page footer while the index held the actual
+      // description.
+      const text = job.description ?? (await getJobDescription(page, job.url)).text;
       const hardCheck = passesHardRequirements(text, criteria);
       if (!hardCheck.pass) {
         console.log(`  skip "${job.title}": ${hardCheck.reason}`);

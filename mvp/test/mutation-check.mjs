@@ -1005,8 +1005,27 @@ const MUTATIONS = [
     source: "searchIndex",
     spec: "azure",
     fixture: "",
-    from: "  if (city && region) return { title, url, location: `${city}, ${region}` };",
-    to: "  if (false) return { title, url, location: `${city}, ${region}` };",
+    from: "  if (city && region) return { title, url, location: `${city}, ${region}`, description };",
+    to: "  if (false) return { title, url, location: `${city}, ${region}`, description };",
+  },
+  {
+    // Without the description the ranker scores from a title and the apply
+    // page's navigation chrome. Measured: Business Analyst scored 75 on
+    // chrome and 55 on the real text, which named the actual gap.
+    bug: "drop the index's own description, so scores come from page chrome",
+    source: "searchIndex",
+    spec: "azure",
+    fixture: "",
+    from: "  const description = described.trim() ? described.trim() : undefined;",
+    to: "  const description = undefined;",
+  },
+  {
+    bug: "lose the description when location variants of one role are merged",
+    source: "searchIndex",
+    spec: "azure",
+    fixture: "",
+    from: "        description: posting.description,",
+    to: "        description: undefined,",
   },
   {
     bug: "never advance skip, so only the board's own first page is read",

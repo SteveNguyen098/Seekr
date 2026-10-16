@@ -304,6 +304,13 @@ const TITLE_KEYS = ["name", "title", "jobTitle", "positionName", "position", "ro
 /** Field names carrying its absolute URL. */
 const URL_KEYS = ["url", "jobUrl", "applyUrl", "absolute_url", "absoluteUrl", "link", "permalink"];
 /** Field names carrying its location(s). */
+/**
+ * Field names carrying the job description. Azure's index splits it across
+ * Responsibilities and Skills, so several are joined rather than taking the
+ * first that matches.
+ */
+const DESCRIPTION_KEYS = ["responsibilities", "description", "jobDescription", "summary", "content", "skills", "qualifications"];
+
 /** A city on its own, when the index splits city from region. */
 const CITY_KEYS = ["city", "cityName", "town"];
 /** The region beside it - Azure's board states "GA" in a State field. */
@@ -378,7 +385,17 @@ export function postingFromHit(hit: Record<string, unknown>): JobPosting | null 
   // like a role open in two places and reads oddly in the shortlist.
   const city = firstText(hit, CITY_KEYS, index);
   const region = firstText(hit, REGION_KEYS, index);
-  if (city && region) return { title, url, location: `${city}, ${region}` };
+  // Joined, not first-match: Azure states responsibilities and skills in
+  // separate fields and both are worth ranking on.
+  const described = DESCRIPTION_KEYS.map((key) => {
+    const actual = index.get(key.toLowerCase());
+    return actual ? textsFrom(hit[actual]).join(" ") : "";
+  })
+    .filter(Boolean)
+    .join("\n\n");
+  const description = described.trim() ? described.trim() : undefined;
+
+  if (city && region) return { title, url, location: `${city}, ${region}`, description };
 
   const locations = new Set<string>();
   for (const key of LOCATION_KEYS) {
@@ -386,7 +403,7 @@ export function postingFromHit(hit: Record<string, unknown>): JobPosting | null 
     if (!actual) continue;
     for (const text of textsFrom(hit[actual])) locations.add(text.replace(/\s+/g, " ").trim());
   }
-  return { title, url, location: [...locations].join(" / ") || city || region };
+  return { title, url, location: [...locations].join(" / ") || city || region, description };
 }
 
 /**
@@ -400,19 +417,28 @@ export function postingFromHit(hit: Record<string, unknown>): JobPosting | null 
  * Bangalore-only role and scoring as off-location.
  */
 export function mergeLocationVariants(postings: JobPosting[]): JobPosting[] {
-  const byUrl = new Map<string, { title: string; url: string; locations: Set<string> }>();
+  const byUrl = new Map<string, { title: string; url: string; locations: Set<string>; description?: string }>();
   for (const posting of postings) {
     const existing = byUrl.get(posting.url);
     const locations = posting.location.split(" / ").map((l) => l.trim()).filter(Boolean);
     if (!existing) {
-      byUrl.set(posting.url, { title: posting.title, url: posting.url, locations: new Set(locations) });
+      byUrl.set(posting.url, {
+        title: posting.title,
+        url: posting.url,
+        locations: new Set(locations),
+        description: posting.description,
+      });
       continue;
     }
     for (const location of locations) existing.locations.add(location);
+    // Location variants of one role share its description; keep the first
+    // non-empty rather than losing it to a variant that omitted it.
+    if (!existing.description && posting.description) existing.description = posting.description;
   }
-  return [...byUrl.values()].map(({ title, url, locations }) => ({
+  return [...byUrl.values()].map(({ title, url, locations, description }) => ({
     title,
     url,
+    description,
     // Every location is kept rather than truncated: acceptableLocations is
     // matched by substring, so dropping variants to shorten the line would
     // silently drop the one the user actually wanted.

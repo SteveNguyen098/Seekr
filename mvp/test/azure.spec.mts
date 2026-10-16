@@ -110,6 +110,28 @@ console.log("\nmapping a PascalCase hit");
     mapped?.location === "Atlanta, GA",
     mapped?.location ?? ""
   );
+  // The description decides the SCORES, not just the listing. Measured on
+  // the same board before and after: scoring from the apply page's chrome
+  // gave Business Analyst 75 and "closely matches his core competencies",
+  // while scoring from the index's own text gave 55 and named the actual
+  // gap - "requires Salesforce/Meta/Pinterest ad platform expertise not
+  // evidenced in the resume". Two postings cleared the score bar on
+  // chrome; one does on the real text.
+  check(
+    "THE BUG: the index's own description is carried onto the posting",
+    (mapped?.description ?? "").includes("Long description text"),
+    String(mapped?.description).slice(0, 40)
+  );
+  check(
+    "...and separate description fields are joined, not picked between",
+    // Azure splits it across Responsibilities and Skills and both matter.
+    (mapped?.description ?? "").includes("SAP, SQL"),
+    String(mapped?.description).slice(-40)
+  );
+  check(
+    "a hit with no description field carries none, so DOM boards still fetch",
+    postingFromHit({ name: "Analyst", url: "https://example.com/jobs/1" })?.description === undefined
+  );
   check(
     "a camelCase hit still maps, so Algolia is unaffected",
     postingFromHit({ name: "Analyst", url: "https://example.com/jobs/1", locationNames: ["Remote (US)"] })?.location ===
@@ -194,6 +216,11 @@ console.log("\nreading the whole index");
     check("and every row maps to a posting", read.postings.length === TOTAL, String(read.postings.length));
     check("THE BUG: nothing was refused for a missing key", refusals === 0, `${refusals} refusal(s)`);
     check("every posting has a location", read.postings.every((p) => /, GA$/.test(p.location)));
+    check(
+      "every posting carries its description through the whole read",
+      read.postings.every((p) => (p.description ?? "").length > 50),
+      String(read.postings.filter((p) => !(p.description ?? "").length).length) + " without one"
+    );
     check(
       "the filter was sent on every request, not just the first",
       bodies.length > 0 && bodies.every((b) => String(b.filter) === "(State eq 'GA')"),

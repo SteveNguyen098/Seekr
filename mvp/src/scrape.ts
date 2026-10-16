@@ -6,6 +6,24 @@ export interface JobPosting {
   title: string;
   url: string;
   location: string;
+  /**
+   * The job description, when the board's own index already carried it.
+   *
+   * Set only by the search-index path, and it changes the ranking's input
+   * rather than its output. THE FAILURE it fixes: on Kforce the posting URL
+   * is an apply form, so opening it returned the site's navigation chrome -
+   * 4,254 characters of "Close Menu Find Work Solutions..." under the title
+   * "Submit Resume". Two different jobs came back within 13 characters of
+   * each other, and a phrase taken from the real description appeared
+   * nowhere on the page. So every score was computed from a title and a
+   * page footer, while the index held the actual text (1,979 and 1,201
+   * characters for those two roles).
+   *
+   * Undefined for every DOM-scraped board, which keeps fetching per
+   * posting - that is the right behaviour there, since those URLs are the
+   * posting itself.
+   */
+  description?: string;
 }
 
 /**
