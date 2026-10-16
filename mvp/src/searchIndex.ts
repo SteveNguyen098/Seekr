@@ -48,7 +48,56 @@ export interface SearchIndexEndpoint {
    */
   facetFilters?: unknown;
   filters?: unknown;
+  /** Which service this endpoint belongs to, and so how to page it. */
+  flavour: SearchFlavour;
+  /**
+   * Azure only: the board's own `api-key` request header, which it
+   * requires and which Algolia instead puts in the query string. Measured:
+   * a replay of the exact same body without this header is refused 403, so
+   * leaving it out is why the first version of this reader returned zero
+   * rows while reporting no error.
+   *
+   * Held in memory for the length of one scan, never logged and never
+   * written anywhere. Only this one header is carried - copying the whole
+   * set would drag cookies and referer along with it.
+   */
+  apiKey?: string;
+  /**
+   * Azure only: the board's own request body, replayed with `skip`
+   * advancing. Kept whole rather than picked apart, for the same reason
+   * Algolia's facetFilters are inherited rather than translated - the
+   * board's query already expresses the user's filter exactly, as
+   * "(State eq 'GA')", and rebuilding it would be a guess per site.
+   */
+  query?: Record<string, unknown>;
 }
+
+/**
+ * Which search service a board answers from. The difference is only in how
+ * a query is paged and where the hits sit in the response; everything
+ * else - watching for the board's own request, reusing it verbatim,
+ * mapping fields tolerantly - is shared.
+ *
+ * Azure was added for Kforce, whose board renders NO posting links at all:
+ * of 131 anchors on the page, exactly one points at a job. The DOM is not
+ * a fallback there, it is simply empty, so the index is the only route to
+ * the 1,182 jobs it holds.
+ */
+export type SearchFlavour = "algolia" | "azure";
+
+/**
+ * Azure AI Search (formerly Cognitive Search). Measured on Kforce:
+ *
+ *   POST kforcewebeast.search.windows.net/indexes/kforcewebjobentity/docs/search
+ *   { "filter":"(State eq 'GA')", "search":"", "skip":0, "top":25, "count":true }
+ *   -> { "@odata.count": 30, "value": [ { Title, City, State, ApplyUrl, ... } ] }
+ *
+ * Easier to page than Algolia - skip/top with a true total in
+ * @odata.count - and its hits carry the job DESCRIPTION too
+ * (Responsibilities ~2,000 chars, Skills), which no other board hands over
+ * without opening each posting.
+ */
+const AZURE_SEARCH_RE = /\.search\.windows\.net\/indexes\/[^/]+\/docs\/search/i;
 
 /**
  * Matches Algolia's query endpoint on either host it is served from
@@ -109,8 +158,13 @@ export function watchForSearchIndex(page: Page): {
   let endpoint: SearchIndexEndpoint | null = null;
 
   const onRequest = (req: Request) => {
+    // A CORS preflight is not a query: it carries no body, no filter and
+    // no api-key, so treating it as the board's view would discard all
+    // three.
+    if (req.method() === "OPTIONS") return;
     const url = req.url();
-    if (!ALGOLIA_SEARCH_RE.test(url)) return;
+    const flavour = searchFlavourFor(url);
+    if (!flavour) return;
     const postData = req.postData() ?? "";
     const indexName = indexNameFor(postData, url);
     if (!indexName) return;
@@ -118,9 +172,15 @@ export function watchForSearchIndex(page: Page): {
     endpoint = pickEndpoint(endpoint, {
       url,
       indexName,
-      hitsPerPage: query?.hitsPerPage,
+      flavour,
+      // Azure states its page size as `top`, Algolia as `hitsPerPage`.
+      // Normalised here so the "a query asking for no hits is a facet
+      // count, not the board's view" rule reads the same for both.
+      hitsPerPage: query?.hitsPerPage ?? query?.top,
       facetFilters: query?.facetFilters,
       filters: query?.filters,
+      query: flavour === "azure" ? query ?? undefined : undefined,
+      apiKey: flavour === "azure" ? req.headers()["api-key"] : undefined,
     });
   };
 
@@ -142,6 +202,13 @@ export function watchForSearchIndex(page: Page): {
  * multi-query endpoint names no index in its path - it uses a wildcard
  * segment - so the URL form is only usable when a real name is there.
  */
+/** Which service a request URL belongs to, or null if it is neither. */
+export function searchFlavourFor(url: string): SearchFlavour | null {
+  if (ALGOLIA_SEARCH_RE.test(url)) return "algolia";
+  if (AZURE_SEARCH_RE.test(url)) return "azure";
+  return null;
+}
+
 export function indexNameFor(postData: string, url: string): string | null {
   try {
     const body = JSON.parse(postData);
@@ -150,7 +217,10 @@ export function indexNameFor(postData: string, url: string): string | null {
   } catch {
     // Not JSON, or an empty body - fall through to the URL form.
   }
-  const fromPath = url.match(/\/1\/indexes\/([^/*?]+)\//i)?.[1];
+  const fromPath =
+    url.match(/\/1\/indexes\/([^/*?]+)\//i)?.[1] ??
+    // Azure: /indexes/<name>/docs/search
+    url.match(/\/indexes\/([^/*?]+)\/docs\/search/i)?.[1];
   return fromPath ? decodeURIComponent(fromPath) : null;
 }
 
@@ -161,6 +231,9 @@ export interface EndpointCandidate {
   hitsPerPage?: number;
   facetFilters?: unknown;
   filters?: unknown;
+  flavour: SearchFlavour;
+  query?: Record<string, unknown>;
+  apiKey?: string;
 }
 
 /**
@@ -200,6 +273,9 @@ export function pickEndpoint(
   return {
     url: candidate.url,
     indexName: candidate.indexName,
+    flavour: candidate.flavour,
+    query: candidate.query,
+    apiKey: candidate.apiKey,
     facetFilters: candidate.facetFilters,
     filters: candidate.filters,
   };
@@ -209,9 +285,12 @@ export function pickEndpoint(
  * The single query out of a request body, whichever shape it uses: the
  * JS client's `{"requests":[{...}]}` or the REST endpoint's bare object.
  */
-export function queryBodyFor(
-  postData: string
-): { hitsPerPage?: number; facetFilters?: unknown; filters?: unknown } | null {
+export function queryBodyFor(postData: string): (Record<string, unknown> & {
+  hitsPerPage?: number;
+  top?: number;
+  facetFilters?: unknown;
+  filters?: unknown;
+}) | null {
   try {
     const body = JSON.parse(postData);
     return body?.requests?.[0] ?? body ?? null;
@@ -225,6 +304,10 @@ const TITLE_KEYS = ["name", "title", "jobTitle", "positionName", "position", "ro
 /** Field names carrying its absolute URL. */
 const URL_KEYS = ["url", "jobUrl", "applyUrl", "absolute_url", "absoluteUrl", "link", "permalink"];
 /** Field names carrying its location(s). */
+/** A city on its own, when the index splits city from region. */
+const CITY_KEYS = ["city", "cityName", "town"];
+/** The region beside it - Azure's board states "GA" in a State field. */
+const REGION_KEYS = ["state", "stateCode", "region", "province", "stateProvince"];
 const LOCATION_KEYS = [
   "locationNames", "locations", "locationName", "location",
   "officeNames", "offices", "city", "cities",
@@ -248,9 +331,25 @@ function textsFrom(value: unknown): string[] {
   return value.flatMap((entry) => textsFrom(entry));
 }
 
-function firstText(hit: Record<string, unknown>, keys: string[]): string {
+/**
+ * Field names are matched WITHOUT regard to case.
+ *
+ * THE BUG: every key list here was written in camelCase, and Azure's index
+ * returns PascalCase - Title, City, State, ApplyUrl. So a read that had
+ * fetched all 30 rows correctly mapped every single one to null and the
+ * board came back empty, with nothing to say why. The fetch and the
+ * mapping failed independently, and fixing only the fetch moved the
+ * symptom without moving the result.
+ */
+function keyIndex(hit: Record<string, unknown>): Map<string, string> {
+  return new Map(Object.keys(hit).map((key) => [key.toLowerCase(), key]));
+}
+
+function firstText(hit: Record<string, unknown>, keys: string[], index = keyIndex(hit)): string {
   for (const key of keys) {
-    const [text] = textsFrom(hit[key]);
+    const actual = index.get(key.toLowerCase());
+    if (!actual) continue;
+    const [text] = textsFrom(hit[actual]);
     if (text) return text;
   }
   return "";
@@ -267,16 +366,27 @@ function firstText(hit: Record<string, unknown>, keys: string[]): string {
  * rather than returning an empty board.
  */
 export function postingFromHit(hit: Record<string, unknown>): JobPosting | null {
-  const title = firstText(hit, TITLE_KEYS).replace(/\s+/g, " ").trim();
-  const url = firstText(hit, URL_KEYS);
+  const index = keyIndex(hit);
+  const title = firstText(hit, TITLE_KEYS, index).replace(/\s+/g, " ").trim();
+  const url = firstText(hit, URL_KEYS, index);
   if (!title || title.length < 3) return null;
   if (!/^https?:\/\//i.test(url)) return null;
 
+  // A city and a region in SEPARATE fields read as one place, not two.
+  // Azure's index splits them - City "Atlanta", State "GA" - and collecting
+  // them like multi-location variants would say "Atlanta / GA", which looks
+  // like a role open in two places and reads oddly in the shortlist.
+  const city = firstText(hit, CITY_KEYS, index);
+  const region = firstText(hit, REGION_KEYS, index);
+  if (city && region) return { title, url, location: `${city}, ${region}` };
+
   const locations = new Set<string>();
   for (const key of LOCATION_KEYS) {
-    for (const text of textsFrom(hit[key])) locations.add(text.replace(/\s+/g, " ").trim());
+    const actual = index.get(key.toLowerCase());
+    if (!actual) continue;
+    for (const text of textsFrom(hit[actual])) locations.add(text.replace(/\s+/g, " ").trim());
   }
-  return { title, url, location: [...locations].join(" / ") };
+  return { title, url, location: [...locations].join(" / ") || city || region };
 }
 
 /**
@@ -321,7 +431,73 @@ export async function readSearchIndex(
   page: Page,
   endpoint: SearchIndexEndpoint
 ): Promise<{ postings: JobPosting[]; rows: number }> {
-  const hits = await page.evaluate(
+  const hits =
+    endpoint.flavour === "azure" ? await readAzureIndex(page, endpoint) : await readAlgoliaIndex(page, endpoint);
+
+  const postings = hits
+    .map((hit) => postingFromHit(hit))
+    .filter((posting): posting is JobPosting => posting !== null);
+
+  // `rows` is the count BEFORE location variants are merged, which is what
+  // the board states about itself. The measured Algolia index reports 625
+  // rows for 348 postings, so comparing the merged count against the
+  // stated total would report a 277-posting shortfall on a complete read.
+  return { postings: mergeLocationVariants(postings), rows: hits.length };
+}
+
+/**
+ * Pages an Azure AI Search index by replaying the board's OWN query body
+ * with `skip` advancing.
+ *
+ * The body is reused whole, so the user's filter travels with it: on the
+ * measured board a Georgia-filtered view sends `"filter":"(State eq 'GA')"`
+ * and nothing here has to know that "Georgia" maps to a State field.
+ *
+ * `@odata.count` gives the true total up front, so the walk knows when it
+ * is done rather than probing for an empty page.
+ */
+async function readAzureIndex(
+  page: Page,
+  endpoint: SearchIndexEndpoint
+): Promise<Record<string, unknown>[]> {
+  return page
+    .evaluate(
+      async ({ url, query, maxPages, pageSize, apiKey }) => {
+        const collected: Record<string, unknown>[] = [];
+        let total = Infinity;
+        for (let pageNum = 0; pageNum < maxPages; pageNum++) {
+          const body = { ...(query ?? {}), count: true, skip: pageNum * pageSize, top: pageSize };
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (apiKey) headers["api-key"] = apiKey;
+          const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) }).catch(() => null);
+          if (!response || !response.ok) break;
+
+          const json = await response.json().catch(() => null);
+          const batch = json?.value;
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          if (typeof json["@odata.count"] === "number") total = json["@odata.count"];
+
+          collected.push(...batch);
+          if (collected.length >= total) break;
+        }
+        return collected;
+      },
+      {
+        url: endpoint.url,
+        query: (endpoint.query ?? null) as Record<string, unknown> | null,
+        maxPages: MAX_INDEX_PAGES,
+        pageSize: HITS_PER_PAGE,
+        apiKey: endpoint.apiKey ?? "",
+      }
+    )
+    .catch(() => [] as Record<string, unknown>[]);
+}
+
+async function readAlgoliaIndex(
+  page: Page,
+  endpoint: SearchIndexEndpoint
+): Promise<Record<string, unknown>[]> {
+  return page.evaluate(
     async ({ url, indexName, maxPages, hitsPerPage, facetFilters, filters }) => {
       const collected: Record<string, unknown>[] = [];
       for (let pageNum = 0; pageNum < maxPages; pageNum++) {
@@ -355,14 +531,4 @@ export async function readSearchIndex(
       filters: endpoint.filters ?? null,
     }
   ).catch(() => [] as Record<string, unknown>[]);
-
-  const postings = hits
-    .map((hit) => postingFromHit(hit))
-    .filter((posting): posting is JobPosting => posting !== null);
-
-  // `rows` is the count BEFORE location variants are merged, which is what
-  // the board states about itself. The measured index reports 625 rows for
-  // 348 postings, so comparing the merged count against the stated total
-  // would report a 277-posting shortfall on a complete read.
-  return { postings: mergeLocationVariants(postings), rows: hits.length };
 }

@@ -253,14 +253,50 @@ async function listJobsOnePage(
   // during page load - a listener added afterwards sees nothing.
   const searchIndex = watchForSearchIndex(page);
   try {
-    await page.goto(careerUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
-      page.goto(careerUrl, { waitUntil: "load", timeout: 30000 })
-    );
+    // A reload when we are already on this exact URL, rather than another
+    // goto to it.
+    //
+    // THE BUG: navigating to the URL the page is already showing is a
+    // same-document navigation when the two differ only by fragment - the
+    // app never re-runs, so it never re-issues the search its jobs come
+    // from, and a watcher attached just now sees nothing. classifyUrl runs
+    // immediately before this and leaves the page on that very URL, so the
+    // case is the normal one, not an edge.
+    //
+    // Measured on Kforce: the baseline load found no index and fell back to
+    // the DOM's single junk link, while the pagination probe - a genuinely
+    // different URL, so a real load - found the index and returned 30 jobs.
+    // The board came back as 31 postings whose first entry was a
+    // cookie-consent link.
+    const alreadyHere = page.url() === careerUrl;
+    if (alreadyHere) {
+      await page
+        .reload({ waitUntil: "networkidle", timeout: 30000 })
+        .catch(() => page.reload({ waitUntil: "load", timeout: 30000 }));
+    } else {
+      await page.goto(careerUrl, { waitUntil: "networkidle", timeout: 30000 }).catch(() =>
+        page.goto(careerUrl, { waitUntil: "load", timeout: 30000 })
+      );
+    }
 
     // Preferred over anything in the DOM when it is available: a board that
     // answers from a search index renders only the first batch of hits, so
     // the DOM is a fraction of the board by construction, not by accident.
-    const endpoint = searchIndex.found();
+    //
+    // Waited for, briefly, because "networkidle" is not a promise that the
+    // board has asked for its jobs yet. Measured on Kforce: the first load
+    // issues its search just after idle, so checking immediately found
+    // nothing, the DOM path returned its one junk link, and only the NEXT
+    // page load (the pagination probe) caught the index - giving 31
+    // postings whose first entry was a cookie-consent link rather than 30
+    // jobs. Three seconds is longer than the gap measured and costs
+    // nothing on a board that has no index: it only ever waits when one
+    // has not appeared, and most boards resolve on the first poll.
+    let endpoint = searchIndex.found();
+    for (let waited = 0; !endpoint && waited < 3000; waited += 250) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      endpoint = searchIndex.found();
+    }
     if (endpoint) {
       const fromIndex = await readSearchIndex(page, endpoint);
       // Falls through to DOM scraping on an empty read rather than
